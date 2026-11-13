@@ -1,0 +1,35 @@
+{
+  "items": [
+    {
+      "ref": null,
+      "title": "完成《潮汐之歌》第四章后半部分初译",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-08-laptop#1"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "《潮汐之歌》译稿",
+      "summary": "已完成第四章前两节初译，继续推进第 3 小节",
+      "source_line_ids": ["2026-03-08-laptop#1"]
+    },
+    {
+      "domain": "健康",
+      "topic": "日常运动与体能",
+      "summary": "完成 25 分钟肩颈拉伸与核心放松训练",
+      "source_line_ids": ["2026-03-08-laptop#2"]
+    }
+  ],
+  "memory_candidates": [
+    {
+      "kind": "insight",
+      "text": "当截稿进度与外部社交活动冲突时，优先保障正稿翻译并果断婉拒线下沙龙",
+      "source_line_ids": ["2026-03-07-laptop#1", "2026-03-08-laptop#1"]
+    }
+  ]
+}

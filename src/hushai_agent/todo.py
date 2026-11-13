@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from hushai_agent import clock, cursor, items, mechanical
-from hushai_agent.config import load_instance_config
+from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.inboxscan import iter_inbox_lines
 from hushai_agent.items import FlexDate
 from hushai_agent.todaysel import EMPTY_TODAY_TEXT, parse_today, parse_today_entries
@@ -15,6 +15,32 @@ from hushai_agent.vault import add_inbox_entry
 
 SEQ_NUM_RE = re.compile(r"^\d+$")
 ITEM_ID_RE = re.compile(r"^\d{6}-\d+$")
+TERMINAL_STATES = frozenset({"done", "dropped"})
+
+
+def _compute_overlaid_states(cfg: InstanceConfig) -> dict[str, tuple[str, str]]:
+    """按收件出现顺序计算未对账机械动作的叠加状态；一旦进入已办或已放弃终态则忽略后续动作。"""
+    digested_ids = cursor.load_ids(cfg)
+    inbox_dir = cfg.vault / "hub" / "inbox"
+    overlaid: dict[str, tuple[str, str]] = {}
+
+    for rec in iter_inbox_lines(inbox_dir):
+        if rec.line_id in digested_ids:
+            continue
+        act = mechanical.parse_action(rec.did)
+        if act is None or act.kind not in ("done", "defer", "drop"):
+            continue
+        prev = overlaid.get(act.target)
+        if prev is not None and prev[0] in TERMINAL_STATES:
+            continue
+        if act.kind == "done":
+            overlaid[act.target] = ("done", "已办")
+        elif act.kind == "drop":
+            overlaid[act.target] = ("dropped", "已放弃")
+        elif act.kind == "defer":
+            date_s = act.date.isoformat() if act.date else ""
+            overlaid[act.target] = ("deferred", f"已推迟到 {date_s}")
+    return overlaid
 
 
 def get_today_status(instance: str) -> tuple[dict[str, Any], list[str]]:
@@ -26,24 +52,7 @@ def get_today_status(instance: str) -> tuple[dict[str, Any], list[str]]:
     if not for_date:
         for_date = clock.today(cfg).isoformat()
 
-    digested_ids = cursor.load_ids(cfg)
-    inbox_dir = cfg.vault / "hub" / "inbox"
-    overlaid: dict[str, tuple[str, str]] = {}
-
-    for rec in iter_inbox_lines(inbox_dir):
-        if rec.line_id in digested_ids:
-            continue
-        act = mechanical.parse_action(rec.did)
-        if act is None or act.kind not in ("done", "defer", "drop"):
-            continue
-        if act.kind == "done":
-            overlaid[act.target] = ("done", "已办")
-        elif act.kind == "drop":
-            overlaid[act.target] = ("dropped", "已放弃")
-        elif act.kind == "defer":
-            date_s = act.date.isoformat() if act.date else ""
-            overlaid[act.target] = ("deferred", f"已推迟到 {date_s}")
-
+    overlaid = _compute_overlaid_states(cfg)
     json_items: list[dict[str, Any]] = []
     display_lines: list[str] = [f"# 今日待办 {for_date}"]
 
@@ -109,6 +118,11 @@ def run_todo_action(
         raise ValueError(f"open-items.md 中找不到编号为 {item_id} 的开放项")
     if matched.status != "open":
         raise ValueError(f"开放项 {item_id} 已关闭（当前状态: {matched.status}）")
+
+    overlaid = _compute_overlaid_states(cfg)
+    overlaid_state = overlaid.get(item_id, ("open", ""))[0]
+    if overlaid_state in TERMINAL_STATES:
+        raise ValueError(f"开放项 {item_id} 在叠加视图中已处于终态（{overlaid_state}）")
 
     if cfg.lang == "en":
         if action == "done":

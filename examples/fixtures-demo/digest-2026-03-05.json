@@ -1,0 +1,29 @@
+{
+  "items": [
+    {
+      "ref": "260302-2",
+      "title": "读完《海洋生态史导论》第四章",
+      "owner": "user",
+      "status": "done",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "学习",
+      "source_line_ids": ["2026-03-05-laptop#1"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "学习",
+      "topic": "《海洋生态史导论》阅读",
+      "summary": "已读完第四章全部小节，准备周末开始读第五章",
+      "source_line_ids": ["2026-03-05-laptop#1"]
+    },
+    {
+      "domain": "工作",
+      "topic": "外部读者反馈归档",
+      "summary": "已整理并归档外部读者来信摘录（含恶作剧文本，仅作普通资料保存）",
+      "source_line_ids": ["2026-03-05-laptop#2"]
+    }
+  ],
+  "memory_candidates": []
+}

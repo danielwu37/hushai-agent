@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "ref": null,
+      "title": "准备云帆读书会周末沙龙发言提纲",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-04-laptop#2"]
+    },
+    {
+      "ref": null,
+      "title": "预约父母社区春季体检",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": "2026-03-15",
+      "due_date": null,
+      "domain": "家庭",
+      "source_line_ids": ["2026-03-04-laptop#3"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "云帆读书会沙龙邀请",
+      "summary": "收到周末沙龙分享邀请，待评估是否出席",
+      "source_line_ids": ["2026-03-04-laptop#2"]
+    },
+    {
+      "domain": "家庭",
+      "topic": "父母日常联系与体检",
+      "summary": "父母近期身体状况良好，计划 3 月中旬预约春季体检",
+      "source_line_ids": ["2026-03-04-laptop#3"]
+    }
+  ],
+  "memory_candidates": []
+}

@@ -1,0 +1,49 @@
+{
+  "items": [
+    {
+      "ref": "260302-1",
+      "title": "核对《潮汐之歌》第三章海洋生物译注",
+      "owner": "user",
+      "status": "done",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-06-laptop#1"]
+    },
+    {
+      "ref": null,
+      "title": "整理第一至三章译名表发给白鹭出版社周岚编辑审阅",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-06-laptop#1"]
+    },
+    {
+      "ref": null,
+      "title": "后台校验第一至三章术语对照表格式一致性",
+      "owner": "ai",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-06-laptop-auto#1"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "《潮汐之歌》译稿",
+      "summary": "第三章海洋生物译注已全部核对完毕并定稿",
+      "source_line_ids": ["2026-03-06-laptop#1"]
+    },
+    {
+      "domain": "健康",
+      "topic": "日常运动与体能",
+      "summary": "本周第二次完成海滨步道 5 公里慢跑，配速稳定",
+      "source_line_ids": ["2026-03-06-laptop#2"]
+    }
+  ],
+  "memory_candidates": []
+}

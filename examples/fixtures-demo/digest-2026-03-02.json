@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "ref": null,
+      "title": "核对《潮汐之歌》第三章海洋生物译注",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": "2026-03-03",
+      "due_date": "2026-03-03",
+      "domain": "工作",
+      "source_line_ids": ["2026-03-02-laptop#1"]
+    },
+    {
+      "ref": null,
+      "title": "读完《海洋生态史导论》第四章",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": "2026-03-08",
+      "domain": "学习",
+      "source_line_ids": ["2026-03-02-laptop#2"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "《潮汐之歌》译稿",
+      "summary": "第三章正稿初译已完成，待核对海洋生物译注",
+      "source_line_ids": ["2026-03-02-laptop#1"]
+    },
+    {
+      "domain": "学习",
+      "topic": "《海洋生态史导论》阅读",
+      "summary": "已读完第四章前半部分并完成摘录",
+      "source_line_ids": ["2026-03-02-laptop#2"]
+    }
+  ],
+  "memory_candidates": []
+}

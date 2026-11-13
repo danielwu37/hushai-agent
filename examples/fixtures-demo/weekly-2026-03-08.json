@@ -1,0 +1,22 @@
+{
+  "insights": [
+    {
+      "text": "上午时段集中推进《潮汐之歌》正稿初译与译注定稿，产出节奏最为稳定",
+      "basis": "evidenced",
+      "source_line_ids": ["2026-03-02-laptop#1", "2026-03-06-laptop#1", "2026-03-08-laptop#1"]
+    },
+    {
+      "text": "傍晚慢跑与拉伸训练有助于缓解高强度伏案校对后的肩颈疲劳",
+      "basis": "inferred",
+      "source_line_ids": ["2026-03-03-laptop#2", "2026-03-06-laptop#2", "2026-03-08-laptop#2"]
+    }
+  ],
+  "suspect_done": [
+    {
+      "ref": "260306-2",
+      "reason": "03-06 自动记录已同步术语对照表修订记录，后台格式一致性校验可能已完成",
+      "source_line_ids": ["2026-03-06-laptop-auto#1"]
+    }
+  ],
+  "contradictions": []
+}

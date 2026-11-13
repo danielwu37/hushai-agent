@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "ref": "260304-1",
+      "title": "准备云帆读书会周末沙龙发言提纲",
+      "owner": "user",
+      "status": "dropped",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "工作",
+      "source_line_ids": ["2026-03-07-laptop#1"]
+    },
+    {
+      "ref": null,
+      "title": "整理《海洋生态史导论》第五章术语摘录",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": null,
+      "due_date": null,
+      "domain": "学习",
+      "source_line_ids": ["2026-03-07-laptop#2"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "云帆读书会沙龙邀请",
+      "summary": "已决定婉拒周末沙龙分享，发言提纲不再准备",
+      "source_line_ids": ["2026-03-07-laptop#1"]
+    },
+    {
+      "domain": "学习",
+      "topic": "《海洋生态史导论》阅读",
+      "summary": "已开始阅读第五章并标记重点术语",
+      "source_line_ids": ["2026-03-07-laptop#2"]
+    }
+  ],
+  "memory_candidates": []
+}

@@ -1,0 +1,49 @@
+{
+  "items": [
+    {
+      "ref": "260302-1",
+      "title": "核对《潮汐之歌》第三章海洋生物译注",
+      "owner": "user",
+      "status": "deferred",
+      "scheduled_date": "2026-03-06",
+      "due_date": "2026-03-06",
+      "domain": "工作",
+      "source_line_ids": ["2026-03-03-laptop#1"]
+    },
+    {
+      "ref": null,
+      "title": "交海琴区物业费",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": "2026-03-07",
+      "due_date": null,
+      "domain": "生活",
+      "source_line_ids": ["2026-03-03-laptop-auto#2"]
+    },
+    {
+      "ref": null,
+      "title": "阳台绿植换盆与浇水",
+      "owner": "user",
+      "status": "open",
+      "scheduled_date": "2026-03-07",
+      "due_date": null,
+      "domain": "家庭",
+      "source_line_ids": ["2026-03-03-laptop-auto#2"]
+    }
+  ],
+  "status_rows": [
+    {
+      "domain": "工作",
+      "topic": "《潮汐之歌》译稿",
+      "summary": "等待白鹭出版社寄达补充参考资料，第三章译注核对推迟至周五（03-06）",
+      "source_line_ids": ["2026-03-03-laptop#1"]
+    },
+    {
+      "domain": "健康",
+      "topic": "日常运动与体能",
+      "summary": "已完成海滨步道 5 公里慢跑",
+      "source_line_ids": ["2026-03-03-laptop#2"]
+    }
+  ],
+  "memory_candidates": []
+}

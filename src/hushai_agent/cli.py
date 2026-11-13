@@ -14,6 +14,7 @@ from hushai_agent.doctor import run_doctor
 from hushai_agent.guard import GuardError
 from hushai_agent.inboxfmt import InboxFormatError
 from hushai_agent.items import ItemFormatError
+from hushai_agent.lock import LockBusy
 from hushai_agent.validate import validate_vault
 from hushai_agent.vault import add_inbox_entry, init_instance
 
@@ -151,7 +152,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"未知命令: {args.command}", file=sys.stderr)
         return 1
 
-    except (ConfigError, InboxFormatError, ItemFormatError, GuardError, ValueError, OSError) as exc:
+    except (
+        ConfigError,
+        InboxFormatError,
+        ItemFormatError,
+        GuardError,
+        LockBusy,
+        ValueError,
+        OSError,
+        RuntimeError,
+    ) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 

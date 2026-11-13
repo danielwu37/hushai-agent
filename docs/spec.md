@@ -141,6 +141,20 @@
 3. **键值段**：第 3 段起为 `键=值` 属性，顺序不限，空值用 `-` 表示。合法键包括：`owner`（`user` | `user_decision` | `ai`）、`sched`（排期日 `YYYY-MM-DD` 或 `-`）、`due`（截止日 `YYYY-MM-DD` 或 `-`）、`domain`（领域）、`verified`（核实日 `YYYY-MM-DD`）、`closed`（关闭日 `YYYY-MM-DD`，已关闭项填写）、`src`（逗号分隔的来源 `line_id` 列表）。
 4. **校验规则**：`validate` 包含 `open-items` 检查项，`open-items.md` 中所有以 `- [` 开头的行必须能按上述格式解析，否则报 `FAIL`。
 
+### 3.5 近况（`hub/status.md`）与近况索引（`hub/status-index.md`）格式
+
+`hub/status.md` 记录各领域的长期事项近况，头部带派生说明引用块，正文按领域分为 `## <领域>` 节，每个事项占一行，以全角竖线 `｜` 分隔为 5 段：
+
+```text
+- 工作｜第三章译稿｜初译完成，等编辑反馈｜verified=2026-03-04｜src=L-…,L-…
+```
+
+约束：
+1. **字段定义**：第 1 段为 `- <领域>`，第 2 段为 `<事项名>`（`topic`），第 3 段为 `<现状一句话>`（`summary`），第 4 段为 `verified=YYYY-MM-DD`，第 5 段为 `src=<逗号分隔的 line_id>`。
+2. **更新规则（upsert）**：以 `（领域，事项名）` 为联合键；同名事项更新 `summary` 与 `verified`，`src` 列表合并去重。
+3. **过期核实标记**：渲染 `status.md` 时，若 `verified` 距基准日 `as_of` 超过 `stale_days`（默认 14 天），在 `summary` 末尾追加 `（状态未核实）`；解析时自动去掉该后缀，不得累积。
+4. **近况索引（`hub/status-index.md`）**：由 `status.md` 机械生成，头部引用块说明「只有事项名，没有状态；要状态读 status.md」，每行格式为 `- <领域>｜<事项名>`。
+
 ---
 
 ## 4. 实例配置 `<config-root>/<instance>/config.ini`
