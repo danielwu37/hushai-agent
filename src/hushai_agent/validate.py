@@ -35,8 +35,8 @@ REQUIRED_FILES = (
     "hub/insights.md",
 )
 
-PAREN_COPY_RE = re.compile(r" \(\d+\)(\.[^.]+)?$")
-SPACE_NUM_MD_RE = re.compile(r"^.+ \d+\.md$")
+PAREN_COPY_RE = re.compile(r"^(?P<stem>.+) \(\d+\)(?P<ext>\.[^.]+)?$")
+SPACE_NUM_RE = re.compile(r"^(?P<stem>.+) \d+(?P<ext>\.[^.]+)?$")
 
 
 @dataclass(frozen=True)
@@ -51,17 +51,40 @@ class CheckItem:
         return {"id": self.id, "level": self.level, "message": self.message}
 
 
-def is_sync_conflict_filename(name: str) -> bool:
-    """判断文件名是否符合同步工具冲突副本特征。"""
-    lower = name.lower()
+def is_sync_conflict_filename(
+    name: str | Path,
+    existing_names: Iterable[str] | None = None,
+) -> bool:
+    """判断文件名是否符合同步工具冲突副本特征。
+
+    - 含 conflict（忽略大小写）、含 冲突、含 .sync-conflict- 直接命中。
+    - 形如 '名字 数字.扩展名' 或 '名字 (1).扩展名' 的文件，要求同目录存在原文件才算冲突。
+    """
+    path_obj = Path(name)
+    fname = path_obj.name
+    lower = fname.lower()
     if "conflict" in lower or ".sync-conflict-" in lower:
         return True
-    if "冲突" in name:
+    if "冲突" in fname:
         return True
-    if PAREN_COPY_RE.search(name):
-        return True
-    if SPACE_NUM_MD_RE.match(name):
-        return True
+
+    candidates: list[str] = []
+    for regex in (PAREN_COPY_RE, SPACE_NUM_RE):
+        match = regex.match(fname)
+        if match:
+            ext = match.group("ext") or ""
+            candidates.append(f"{match.group('stem')}{ext}")
+
+    if not candidates:
+        return False
+
+    if existing_names is not None:
+        name_set = set(existing_names)
+        return any(orig in name_set for orig in candidates)
+
+    if path_obj.parent != Path(""):
+        return any((path_obj.parent / orig).exists() for orig in candidates)
+
     return False
 
 
@@ -185,8 +208,9 @@ def check_sync_conflicts(vault_path: Path) -> CheckItem:
         # 跳过 .git 目录
         dirs[:] = [d for d in sorted(dirs) if d != ".git"]
         root_path = Path(root)
+        file_set = set(files)
         for fname in sorted(files):
-            if is_sync_conflict_filename(fname):
+            if is_sync_conflict_filename(fname, existing_names=file_set):
                 rel = (root_path / fname).relative_to(vault_path).as_posix()
                 conflicts.append(rel)
 

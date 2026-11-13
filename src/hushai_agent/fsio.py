@@ -1,4 +1,4 @@
-"""底层安全文件写入：原子覆写与 O_APPEND 整行追加。"""
+"""底层安全文件读写：原子覆写、O_APPEND 整行追加与受护栏保护的提示词读取。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from hushai_agent.guard import ensure_writable
+from hushai_agent.guard import ensure_prompt_allowed, ensure_writable
 
 
 def ensure_dir(path: str | Path, roots: Iterable[str | Path]) -> Path:
@@ -70,3 +70,59 @@ def append_line(path: str | Path, line: str, roots: Iterable[str | Path]) -> Pat
         os.close(fd)
 
     return target
+
+
+def append_line_with_header(
+    path: str | Path,
+    header: str,
+    line: str,
+    roots: Iterable[str | Path],
+) -> Path:
+    """首次创建文件时用 O_CREAT|O_EXCL 一次写入表头与首行；若文件已存在则 O_APPEND 仅追加行。"""
+    root_list = list(roots)
+    target = ensure_writable(path, root_list)
+    parent = ensure_writable(target.parent, root_list)
+    parent.mkdir(parents=True, exist_ok=True)
+
+    clean_header = header.rstrip("\r\n")
+    clean_line = line.rstrip("\r\n")
+    if "\n" in clean_header or "\r" in clean_header:
+        raise ValueError("append_line_with_header 表头中不能包含换行符")
+    if "\n" in clean_line or "\r" in clean_line:
+        raise ValueError("append_line_with_header 单次写入内容中不能包含换行符")
+
+    try:
+        fd = os.open(
+            os.fspath(target),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o644,
+        )
+    except FileExistsError:
+        payload = (clean_line + "\n").encode("utf-8")
+        fd = os.open(
+            os.fspath(target),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o644,
+        )
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+    else:
+        payload = (clean_header + "\n" + clean_line + "\n").encode("utf-8")
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+
+    return target
+
+
+def read_for_prompt(
+    path: str | Path,
+    vault_root: str | Path,
+    local_only: Iterable[str | Path] = (),
+) -> str:
+    """经 ensure_prompt_allowed 校验后以 UTF-8 读取文件内容，供拼接模型提示词使用。"""
+    real_path = ensure_prompt_allowed(path, vault_root, local_only)
+    return real_path.read_text(encoding="utf-8")

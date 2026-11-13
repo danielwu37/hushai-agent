@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 from zoneinfo import ZoneInfo
 
 from hushai_agent.config import (
@@ -17,7 +18,7 @@ from hushai_agent.config import (
     validate_timezone,
     write_instance_config,
 )
-from hushai_agent.fsio import append_line, atomic_write, ensure_dir
+from hushai_agent.fsio import append_line_with_header, atomic_write, ensure_dir
 from hushai_agent.inboxfmt import (
     format_inbox_filename,
     format_inbox_line,
@@ -46,8 +47,11 @@ class InitResult:
     git_notice: str | None = None
 
 
-def _init_git_repo(vault_path: Path) -> tuple[bool, str | None]:
-    """在 vault 目录中初始化 Git 仓库并生成初始提交。"""
+def _init_git_repo(
+    vault_path: Path,
+    created_files: Sequence[str] = (),
+) -> tuple[bool, str | None]:
+    """在 vault 目录中初始化 Git 仓库；若已有提交但本次补齐了缺失文件，则仅提交补齐的文件。"""
     if shutil.which("git") is None:
         return False, "未检测到 git 命令，已跳过 Git 仓库初始化"
 
@@ -94,6 +98,35 @@ def _init_git_repo(vault_path: Path) -> tuple[bool, str | None]:
                     "commit",
                     "-m",
                     "Initialize hushAi-agent vault",
+                ],
+                cwd=os.fspath(vault_path),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res_commit.returncode != 0:
+                return True, f"git commit 提示: {res_commit.stderr.strip()}"
+        elif created_files:
+            res_add = subprocess.run(
+                ["git", "add", "--", *created_files],
+                cwd=os.fspath(vault_path),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res_add.returncode != 0:
+                return True, f"git add 提示: {res_add.stderr.strip()}"
+            res_commit = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=hushai",
+                    "-c",
+                    "user.email=hushai@localhost",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "hushai init: 补齐缺失文件",
                 ],
                 cwd=os.fspath(vault_path),
                 capture_output=True,
@@ -175,7 +208,7 @@ def init_instance(
     git_initialized = False
     git_notice: str | None = None
     if not no_git:
-        git_initialized, git_notice = _init_git_repo(vault_path)
+        git_initialized, git_notice = _init_git_repo(vault_path, created_files)
 
     return InitResult(
         instance=instance,
@@ -234,9 +267,6 @@ def add_inbox_entry(
         get_instance_state_dir(instance),
     ]
 
-    if not inbox_file.exists():
-        header = f"# {date_str} {door}"
-        append_line(inbox_file, header, roots)
-
-    append_line(inbox_file, formatted_line, roots)
+    header = f"# {date_str} {door}"
+    append_line_with_header(inbox_file, header, formatted_line, roots)
     return inbox_file

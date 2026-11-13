@@ -21,6 +21,7 @@
 
 ```text
 <vault>/
+  .gitignore
   hub/
     AGENTS.md
     AGENTS.local.md
@@ -41,6 +42,7 @@
       AGENTS.md
 ```
 
+- 顶层 `.gitignore` 由模板提供，默认忽略临时文件、系统垃圾文件与编辑器缓存（`.*.tmp`、`.DS_Store`、`Thumbs.db`、`desktop.ini`、`.claude/`、`.agents/`、`~$*`）。
 - `hub/` 下上述 8 个 Markdown 文件及 `inbox/`、`reports/`、`exchange/in/`、`exchange/out/` 目录为必需项。
 - `domains/` 目录为必需项；其下每创建一个领域子目录 `<name>/`，该子目录内必须包含 `AGENTS.md`。
 
@@ -101,6 +103,26 @@
 - 09:30｜工作｜ Finish chapter 3 draft｜artifact: domains/work/tide-ch3.md｜todo: review notes by Friday
 ```
 
+### 3.3 收件行确定性编号（`line_id`）与遍历
+
+1. **格式定义**：
+   通过 `inboxfmt.line_id(date, door, auto, raw_line, occurrence=0) -> str` 生成每条收件行的确定性唯一编号：
+   ```text
+   L-<YYYYMMDD>-<door>[-auto]-<HHMM>-<h>[-<occurrence>]
+   ```
+   - `<YYYYMMDD>`：收件文件对应的 8 位日期（如 `20260302`）。
+   - `<door>`：端编号；当 `auto=True`（来自 `-auto.md` 文件）时紧接 `-auto`。
+   - `<HHMM>`：从收件行第 1 段提取的 4 位时间（如 `0930`）。
+   - `<h>`：对 `raw_line` 去掉首尾空白后的 UTF-8 字节串计算 `sha1`，取前 8 位十六进制小写字符。
+   - `[-<occurrence>]`：当 `occurrence == 0`（同一文件内首次出现）时省略；当同一文件内出现完全相同的收件行时，第二次出现取 `occurrence = 1`（末尾追加 `-1`），以此类推。
+2. **目录遍历 `inboxfmt.iter_inbox_lines(inbox_dir)`**：
+   - 按日期、端、手写先于自动记录、文件内行号的顺序遍历收件目录中所有文件名合法的收件文件。
+   - 自动维护同一文件内相同行的 `occurrence` 计数，对每条合法收件行产出一个记录对象（含 `line_id`、`date`、`door`、`auto`、解析出的各字段 `time_str`/`domain`/`did`/`artifact`/`todo`、`raw`、`path`、`lineno`）。
+   - 遇到空行、注释/引用行或格式非法的行自动跳过，不抛出异常。
+3. **设计用途**：
+   - **汇总时模型引用来源**：管家（steward）在汇总派生层视图与报告时，通过 `line_id` 精确标注结论与待办的原始收件出处。
+   - **已对账行去重**：状态对账机制通过记录已处理的 `line_id` 集合实现幂等增量汇总；因编号不依赖物理行号，在文件头部插入注释行或空行后原有收件行的 `line_id` 保持不变。
+
 ---
 
 ## 4. 实例配置 `<config-root>/<instance>/config.ini`
@@ -140,24 +162,29 @@ local_only = domains/health
 
 字段说明：
 - `timezone`：使用 Python 标准库 `zoneinfo` 校验合法性，默认 `Asia/Shanghai`。
-- `lang`：取值为 `zh` 或 `en`，默认 `zh`。
+- `lang`：取值为 `zh` 或 `en`，默认 `zh`（内置 vault 模板文件正文目前仅提供中文）。
 - `doors.steward`：常驻管家端编号；`doors.known`：允许写入的端编号列表（逗号分隔）。
-- `domains.names`：允许的业务领域列表（逗号分隔）。
+- `domains.names`：允许的业务领域列表（逗号分隔）。`lang = zh` 时默认为 `工作,家庭,生活,学习,健康`；`lang = en` 时默认为 `work,family,life,study,health`。
 - `limits`：核心文件行数及 `today.md` 待办条目数上限。
-- `privacy.local_only`：仅保存在本地、不参与外部同步的相对路径（逗号分隔，可为空）。
+- `privacy.local_only`：仅保存在本地、不参与外部同步且禁止拼入模型提示词的相对路径黑名单（逗号分隔，默认 `domains/health`，`lang = en` 时同样为 `domains/health`）。
 
 ---
 
-## 5. 路径护栏与文件写入安全
+## 5. 路径护栏与文件读写安全
 
-1. **路径护栏 `guard.ensure_writable(path, roots)`**：
+1. **写入路径护栏 `guard.ensure_writable(path, roots)`**：
    - 将目标路径解析为绝对真实路径（跟随符号链接；若目标文件尚不存在则解析其父目录及符号链接）。
    - 若真实路径不在任一允许根目录（`vault`、实例配置目录、实例状态目录）之内，立即抛出 `GuardError`。
    - 严格拦截 `..` 路径逃逸及指向允许根目录外部的符号链接。
-2. **写入方式 `fsio.py`**：
+2. **提示词读取护栏 `guard.ensure_prompt_allowed(path, vault_root, local_only)`**：
+   - 将待读取路径解析为真实路径；若不在 `vault_root` 之内，抛出 `GuardError`。
+   - 若真实路径（或原路径）落在任一 `local_only` 路径之内（含该路径本身，以及通过符号链接指向 `local_only` 目录或其内部文件），立即抛出 `GuardError`。
+   - 校验通过返回解析后的真实路径。
+3. **安全读写函数 `fsio.py`**：
    - `atomic_write`：先在同目录写入临时文件并落盘，再通过 `os.replace` 原子替换目标文件（用于约定层、派生层、配置文件）。
-   - `append_line`：使用 `os.O_APPEND` 标志打开文件并一次性写入整行字节（用于收件文件追加）。
-   - 两个写函数在执行写入前均强制调用 `ensure_writable`。
+   - `append_line`：使用 `os.O_APPEND` 标志打开文件并一次性写入整行字节。
+   - `append_line_with_header(path, header, line, roots)`：首次创建文件时用 `os.open(path, O_WRONLY | O_CREAT | O_EXCL, 0o644)` 一次 `os.write` 写入 `header + "\n" + line + "\n"`；若文件已存在（捕获 `FileExistsError`）则走 `O_APPEND` 仅追加 `line`（0 字节已存在文件不特殊处理）。`inbox add` 使用该函数避免表头与首行分两次写入的竞争，写前同样强制经过 `ensure_writable`。
+   - `read_for_prompt(path, vault_root, local_only) -> str`：先调用 `ensure_prompt_allowed` 校验路径，再以 UTF-8 读取文本。**今后所有把文件内容拼进模型提示词的代码，只能经 `fsio.read_for_prompt` 这个函数读文件。**
 
 ---
 
@@ -168,7 +195,7 @@ local_only = domains/health
 | 命令 | 说明 |
 | --- | --- |
 | `hushai version` | 打印版本号 |
-| `hushai init --instance NAME --vault PATH [--timezone TZ] [--lang zh\|en] [--no-git]` | 初始化 vault、配置与状态目录（幂等，只补缺不覆盖） |
+| `hushai init --instance NAME --vault PATH [--timezone TZ] [--lang zh\|en] [--no-git]` | 初始化 vault、配置与状态目录（幂等，只补缺不覆盖；若在已有提交的 Git 仓库中补回了缺失文件，只 `git add` 本次补齐的文件并提交一次，未补文件则不提交） |
 | `hushai doctor --instance NAME [--json]` | 对指定实例执行 8 项体检，存在 `FAIL` 返回 1，否则返回 0 |
 | `hushai validate PATH [--json]` | 无需配置校验任意 vault 目录，存在 `FAIL` 返回 1，否则返回 0 |
 | `hushai inbox add --instance NAME --door ID --domain D --did TEXT [--artifact X] [--todo Y] [--time HH:MM] [--auto]` | 向实例当天该端的收件文件追加一行 |
@@ -181,9 +208,9 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 2. `vault-structure`：规范要求的目录和文件齐全（缺失为 `FAIL`）。
 3. `limits`：`AGENTS.md`、`profile.md`、`status-index.md` 行数不超上限；`today.md` 中以 `- [ ]` 或 `- [x]` 开头的条目数不超 `today_items`（超限为 `FAIL`）。
 4. `inbox-names`、`inbox-lines`：收件文件名与行格式合法（含领域检查，非法为 `FAIL`）。
-5. `sync-conflicts`：扫描同步冲突副本，文件名含 `conflict`（忽略大小写）、含 `冲突`、形如 `名字 (1).md` 或 `名字 2.md`、含 `.sync-conflict-` 即报 `WARN` 并列出。
+5. `sync-conflicts`：扫描同步冲突副本（不限 `.md` 扩展名）。文件名含 `conflict`（忽略大小写）、含 `冲突`、含 `.sync-conflict-` 直接命中；形如 `名字 数字.扩展名` 或 `名字 (1).扩展名` 的文件，仅当同目录下同时存在去掉尾部序号的原文件（如 `today.md` 与 `today 2.md`）时才算冲突，命中报 `WARN` 并列出。
 6. `state-dir`：状态目录存在且可写（异常为 `FAIL`）。
 7. `vault-git`：检查 vault 是否为 Git 仓库（不是则报 `WARN`）。
-8. `local-only`：检查 `[privacy] local_only` 所列路径是否存在（不存在则报 `WARN`）。
+8. `local-only`：`[privacy] local_only` 是黑名单规则，所列路径尚未创建也算 `OK`（消息中注明「尚未创建」）；若路径写成绝对路径或包含 `..` 则报 `FAIL`。
 
 `validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`sync-conflicts`。

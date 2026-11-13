@@ -97,23 +97,35 @@ def _check_vault_git(vault_path: Path) -> CheckItem:
 
 
 def _check_local_only(cfg: InstanceConfig) -> CheckItem:
-    """检查 [privacy] local_only 配置的路径是否存在。"""
+    """检查 [privacy] local_only 黑名单配置是否合法（路径不存在也算 OK，绝对路径或含 .. 为 FAIL）。"""
     if not cfg.local_only:
         return CheckItem(id="local-only", level="OK", message="未配置或无需额外 local_only 路径")
 
+    invalid: list[str] = []
     missing: list[str] = []
     for rel in cfg.local_only:
+        rel_path = Path(rel)
+        parts = rel.replace("\\", "/").split("/")
+        if rel_path.is_absolute() or os.path.isabs(rel) or ".." in rel_path.parts or ".." in parts:
+            invalid.append(rel)
+            continue
         target = cfg.vault / rel
         if not target.exists():
             missing.append(rel)
 
+    if invalid:
+        return CheckItem(
+            id="local-only",
+            level="FAIL",
+            message=f"local_only 路径非法（不能为绝对路径或包含 ..）: {', '.join(invalid)}",
+        )
     if missing:
         return CheckItem(
             id="local-only",
-            level="WARN",
-            message=f"local_only 路径不存在: {', '.join(missing)}",
+            level="OK",
+            message=f"local_only 黑名单规则正常（尚未创建: {', '.join(missing)}）",
         )
-    return CheckItem(id="local-only", level="OK", message="local_only 路径均存在")
+    return CheckItem(id="local-only", level="OK", message="local_only 路径均已存在")
 
 
 def run_doctor(instance: str) -> dict[str, Any]:

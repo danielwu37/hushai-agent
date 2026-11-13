@@ -23,7 +23,7 @@
 hushai init --instance demo --vault /path/to/my-vault
 ```
 
-该命令会从内置模板生成完整 vault 目录结构、写入实例配置、创建状态目录，并在系统安装了 `git` 时自动初始化版本库。重复执行具备幂等性，只补齐缺失文件而不覆盖已有文件。
+该命令会从内置模板生成完整 vault 目录结构、写入实例配置、创建状态目录，并在系统安装了 `git` 时自动初始化版本库。重复执行具备幂等性，只补齐缺失文件而不覆盖已有文件（若在已有提交的 Git 仓库中补回了缺失文件，会自动提交本次补齐的文件）。指定 `--lang en` 时，生成的实例配置默认领域为英文（`work,family,life,study,health`），但内置 vault 模板文件正文目前只有中文。
 
 ### 2. 实例体检（doctor）
 
@@ -76,7 +76,7 @@ src/hushai_agent/         核心源码包（标准库实现）
   vault.py                记忆库初始化与收件追加逻辑
   validate.py             无配置记忆库规范校验
   doctor.py               实例全量体检
-  templates/vault/        初始化默认中文模板
+  templates/vault/        初始化默认模板（内置模板正文目前只有中文）
 examples/vault-demo/      虚构示例记忆库（自由译者「林晓」）
 tools/privacy_scan.py     个人隐私信息正则扫描工具
 tests/                    单元测试套件

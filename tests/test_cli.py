@@ -152,25 +152,10 @@ class TestCLIAndWorkflows(unittest.TestCase):
         self.assertEqual(self.run_cli("doctor", "--instance", "demo").returncode, 0)
         self.assertEqual(self.run_cli("validate", str(self.vault_dir)).returncode, 0)
 
-        # 未知 door 被拒
-        bad_door = self.run_cli(
-            "inbox", "add",
-            "--instance", "demo",
-            "--door", "unknownpc",
-            "--domain", "工作",
-            "--did", "测试",
-        )
-        self.assertNotEqual(bad_door.returncode, 0)
-
-        # 非法 domain 被拒
-        bad_domain = self.run_cli(
-            "inbox", "add",
-            "--instance", "demo",
-            "--door", "laptop",
-            "--domain", "不存在的领域",
-            "--did", "测试",
-        )
-        self.assertNotEqual(bad_domain.returncode, 0)
+        # 未知 door 与非法 domain 被拒
+        for bad_args in (("--door", "unknownpc", "--domain", "工作"), ("--door", "laptop", "--domain", "不存在的领域")):
+            res_bad = self.run_cli("inbox", "add", "--instance", "demo", *bad_args, "--did", "测试")
+            self.assertNotEqual(res_bad.returncode, 0)
 
     def test_doctor_limits_and_conflicts(self) -> None:
         """7. doctor：AGENTS.md 超行数 -> FAIL；today.md 超 7 条 -> FAIL；today (1).md -> WARN。"""
@@ -246,6 +231,60 @@ class TestCLIAndWorkflows(unittest.TestCase):
         )
         self.assertEqual(res_hit.returncode, 1)
         self.assertIn("leaked.md:2:SECRET_TOKEN_12345", res_hit.stdout)
+
+    def test_lang_en_domains_and_doctor_local_only(self) -> None:
+        """9. --lang en 默认英文领域且 local_only=domains/health；doctor 检查 local-only 黑名单规则。"""
+        vault_en = self.base_dir / "vault-en"
+        r_init = self.run_cli("init", "--instance", "en-inst", "--vault", str(vault_en), "--lang", "en", "--no-git")
+        self.assertEqual(r_init.returncode, 0, msg=r_init.stderr)
+
+        cfg_file = self.config_root / "en-inst" / "config.ini"
+        cfg_text = cfg_file.read_text(encoding="utf-8")
+        self.assertIn("names = work,family,life,study,health", cfg_text)
+        self.assertIn("local_only = domains/health", cfg_text)
+
+        # domains/health 尚未创建时 doctor 仍为 OK，消息注明尚未创建
+        d_ok = self.run_cli("doctor", "--instance", "en-inst", "--json")
+        self.assertEqual(d_ok.returncode, 0)
+        checks_ok = {c["id"]: c for c in json.loads(d_ok.stdout)["checks"]}
+        self.assertEqual(checks_ok["local-only"]["level"], "OK")
+        self.assertIn("尚未创建", checks_ok["local-only"]["message"])
+
+        # local_only 含 .. 或绝对路径时 doctor 报 FAIL
+        for bad_val in ("../secret", "/abs/secret"):
+            cfg_file.write_text(cfg_text.replace("domains/health", bad_val), encoding="utf-8")
+            d_fail = self.run_cli("doctor", "--instance", "en-inst", "--json")
+            self.assertEqual(d_fail.returncode, 1)
+            checks_fail = {c["id"]: c for c in json.loads(d_fail.stdout)["checks"]}
+            self.assertEqual(checks_fail["local-only"]["level"], "FAIL")
+
+    def test_init_gitignore_and_restore_commit(self) -> None:
+        """10. init 生成 .gitignore；已有提交的 vault 补回缺失文件时只提交补齐文件，未补则不提交。"""
+        v_git = self.base_dir / "vault-git-restore"
+        self.assertEqual(self.run_cli("init", "--instance", "git-inst", "--vault", str(v_git)).returncode, 0)
+        self.assertTrue((v_git / ".gitignore").is_file())
+
+        def _git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(["git", *args], cwd=str(v_git), capture_output=True, text=True, check=True)
+
+        self.assertEqual(_git("rev-list", "--count", "HEAD").stdout.strip(), "1")
+        # 再次运行 init（无缺失文件）不产生新提交
+        self.run_cli("init", "--instance", "git-inst", "--vault", str(v_git))
+        self.assertEqual(_git("rev-list", "--count", "HEAD").stdout.strip(), "1")
+
+        # 删掉 today.md，同时修改 profile.md（未暂存）并新建未跟踪文件
+        (v_git / "hub" / "today.md").unlink()
+        (v_git / "hub" / "profile.md").write_text("# 改动但未暂存\n", encoding="utf-8")
+        (v_git / "untracked.md").write_text("untracked\n", encoding="utf-8")
+
+        self.assertEqual(self.run_cli("init", "--instance", "git-inst", "--vault", str(v_git)).returncode, 0)
+        self.assertTrue((v_git / "hub" / "today.md").is_file())
+        self.assertEqual(_git("rev-list", "--count", "HEAD").stdout.strip(), "2")
+        self.assertIn("init", _git("log", "-1", "--pretty=%B").stdout)
+        # profile.md 仍保持未暂存修改，untracked.md 仍保持未跟踪
+        status_out = _git("status", "--porcelain").stdout
+        self.assertIn("profile.md", status_out)
+        self.assertIn("untracked.md", status_out)
 
 
 if __name__ == "__main__":

@@ -19,11 +19,14 @@ DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_LANG = "zh"
 DEFAULT_STEWARD_DOOR = "steward"
 DEFAULT_KNOWN_DOORS = ("steward", "laptop", "web")
-DEFAULT_DOMAINS = ("工作", "家庭", "生活", "学习", "健康")
+DEFAULT_DOMAINS_ZH = ("工作", "家庭", "生活", "学习", "健康")
+DEFAULT_DOMAINS_EN = ("work", "family", "life", "study", "health")
+DEFAULT_DOMAINS = DEFAULT_DOMAINS_ZH
 DEFAULT_AGENTS_LINES = 200
 DEFAULT_PROFILE_LINES = 120
 DEFAULT_STATUS_INDEX_LINES = 80
 DEFAULT_TODAY_ITEMS = 7
+DEFAULT_LOCAL_ONLY = "domains/health"
 
 
 class ConfigError(ValueError):
@@ -68,11 +71,12 @@ def render_default_config(
     vault_path: Path,
     timezone: str = DEFAULT_TIMEZONE,
     lang: str = DEFAULT_LANG,
-    local_only: str = "",
+    local_only: str = DEFAULT_LOCAL_ONLY,
 ) -> str:
     """生成标准 config.ini 文本内容。"""
     known_str = ",".join(DEFAULT_KNOWN_DOORS)
-    domains_str = ",".join(DEFAULT_DOMAINS)
+    domains = DEFAULT_DOMAINS_EN if lang == "en" else DEFAULT_DOMAINS_ZH
+    domains_str = ",".join(domains)
     lines = [
         "[instance]",
         f"name = {name}",
