@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,10 +27,39 @@ DEFAULT_PROFILE_LINES = 120
 DEFAULT_STATUS_INDEX_LINES = 80
 DEFAULT_TODAY_ITEMS = 7
 DEFAULT_LOCAL_ONLY = "domains/health"
+DEFAULT_WINDOW_DAYS = 14
+DEFAULT_STALE_DAYS = 14
+DEFAULT_MAX_DAILY_CALLS = 20
+VALID_TIERS = ("light", "heavy")
 
 
 class ConfigError(ValueError):
     """配置文件缺失、格式损坏或字段不合法。"""
+
+
+def parse_fallback_chain(raw: str) -> list[tuple[str, str]]:
+    """解析任务回退链（如 'agy:light, claude:light'），返回 [(adapter_name, tier), ...]。"""
+    if not raw or not raw.strip():
+        return []
+
+    chain: list[tuple[str, str]] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise ConfigError(f"回退链项格式错误（需为 <adapter>:<tier>）: {item}")
+        adapter_name, tier = (seg.strip() for seg in item.split(":", 1))
+        if not adapter_name:
+            raise ConfigError(f"回退链适配项名称不能为空: {item}")
+        if tier not in VALID_TIERS:
+            raise ConfigError(f"回退链档位非法 '{tier}'（只能是 light 或 heavy）: {item}")
+        chain.append((adapter_name, tier))
+    return chain
+
+
+parse_chain = parse_fallback_chain
+parse_job_chain = parse_fallback_chain
 
 
 @dataclass(frozen=True)
@@ -49,6 +78,13 @@ class InstanceConfig:
     status_index_lines: int
     today_items: int
     local_only: tuple[str, ...]
+    adapters: dict[str, dict[str, str]] = field(default_factory=dict)
+    digest: list[tuple[str, str]] = field(default_factory=list)
+    weekly: list[tuple[str, str]] = field(default_factory=list)
+    window_days: int = DEFAULT_WINDOW_DAYS
+    stale_days: int = DEFAULT_STALE_DAYS
+    max_daily_calls: int = DEFAULT_MAX_DAILY_CALLS
+    jobs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
     @property
     def allowed_domains(self) -> frozenset[str]:
@@ -100,6 +136,19 @@ def render_default_config(
         "[privacy]",
         f"local_only = {local_only}",
         "",
+        "[adapters]",
+        "# <名字>.type = fake | claude | agy（省略时 type 等于名字）",
+        "# fake 另需 <名字>.fixtures = 样例目录；<名字>.light / <名字>.heavy = 模型名",
+        "",
+        "[jobs]",
+        "digest =",
+        "weekly =",
+        f"window_days = {DEFAULT_WINDOW_DAYS}",
+        f"stale_days = {DEFAULT_STALE_DAYS}",
+        "",
+        "[budget]",
+        f"max_daily_calls = {DEFAULT_MAX_DAILY_CALLS}",
+        "",
     ]
     return "\n".join(lines)
 
@@ -124,8 +173,70 @@ def write_instance_config(
     return atomic_write(cfg_file, content, allowed_roots)
 
 
+def _parse_int_option(
+    parser: configparser.ConfigParser,
+    section: str,
+    key: str,
+    default: int,
+    allow_zero: bool = False,
+) -> int:
+    """解析可选整数配置项。"""
+    if not parser.has_section(section) or not parser.has_option(section, key):
+        return default
+    val_str = parser.get(section, key).strip()
+    if not val_str:
+        return default
+    try:
+        val = int(val_str)
+    except ValueError as exc:
+        raise ConfigError(f"配置中 {section}.{key} 必须为整数: {val_str}") from exc
+    if allow_zero and val < 0:
+        raise ConfigError(f"配置中 {section}.{key} 不能小于 0: {val}")
+    if not allow_zero and val <= 0:
+        raise ConfigError(f"配置中 {section}.{key} 必须大于 0: {val}")
+    return val
+
+
+def _parse_optional_sections(
+    parser: configparser.ConfigParser,
+) -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, list[tuple[str, str]]],
+    int,
+    int,
+    int,
+]:
+    """解析 M2 新增可选配置节 [adapters]、[jobs]、[budget]。"""
+    adapters: dict[str, dict[str, str]] = {}
+    if parser.has_section("adapters"):
+        for opt, raw_val in parser.items("adapters"):
+            if "." not in opt:
+                raise ConfigError(f"[adapters] 配置键必须形如 <名字>.<字段>: {opt}")
+            adapter_name, field_name = (p.strip() for p in opt.split(".", 1))
+            if not adapter_name or not field_name:
+                raise ConfigError(f"[adapters] 配置键非法: {opt}")
+            adapters.setdefault(adapter_name, {})[field_name] = raw_val.strip()
+        for adapter_name, props in adapters.items():
+            if not props.get("type"):
+                props["type"] = adapter_name
+
+    jobs: dict[str, list[tuple[str, str]]] = {"digest": [], "weekly": []}
+    if parser.has_section("jobs"):
+        for opt, raw_val in parser.items("jobs"):
+            if opt in ("window_days", "stale_days"):
+                continue
+            jobs[opt.strip()] = parse_fallback_chain(raw_val)
+
+    window_days = _parse_int_option(parser, "jobs", "window_days", DEFAULT_WINDOW_DAYS)
+    stale_days = _parse_int_option(parser, "jobs", "stale_days", DEFAULT_STALE_DAYS)
+    max_daily_calls = _parse_int_option(
+        parser, "budget", "max_daily_calls", DEFAULT_MAX_DAILY_CALLS, allow_zero=True
+    )
+    return adapters, jobs, window_days, stale_days, max_daily_calls
+
+
 def load_instance_config(instance: str) -> InstanceConfig:
-    """读取并严格校验指定实例的 config.ini。"""
+    """读取并严格校验指定实例的 config.ini（兼容 M1 旧配置）。"""
     if not is_valid_instance_name(instance):
         raise ConfigError(f"非法实例名: {instance}")
 
@@ -135,8 +246,7 @@ def load_instance_config(instance: str) -> InstanceConfig:
 
     parser = configparser.ConfigParser(interpolation=None)
     try:
-        content = cfg_file.read_text(encoding="utf-8")
-        parser.read_string(content)
+        parser.read_string(cfg_file.read_text(encoding="utf-8"))
     except (OSError, configparser.Error, UnicodeDecodeError) as exc:
         raise ConfigError(f"读取配置文件失败: {exc}") from exc
 
@@ -155,17 +265,13 @@ def load_instance_config(instance: str) -> InstanceConfig:
                 raise ConfigError(f"配置 [{sec}] 节缺少 {key} 字段")
 
     name = parser.get("instance", "name").strip()
-    if not is_valid_instance_name(name):
-        raise ConfigError(f"配置中 instance.name 非法: {name}")
-    if name != instance:
-        raise ConfigError(f"配置中 instance.name ({name}) 与实例名 ({instance}) 不一致")
+    if not is_valid_instance_name(name) or name != instance:
+        raise ConfigError(f"配置中 instance.name ({name}) 非法或与实例名 ({instance}) 不一致")
 
     vault_raw = parser.get("instance", "vault").strip()
-    if not vault_raw:
-        raise ConfigError("配置中 instance.vault 不能为空")
-    vault_path = Path(vault_raw)
-    if not vault_path.is_absolute():
-        raise ConfigError(f"配置中 instance.vault 必须为绝对路径: {vault_raw}")
+    vault_path = Path(vault_raw) if vault_raw else Path("")
+    if not vault_raw or not vault_path.is_absolute():
+        raise ConfigError(f"配置中 instance.vault 必须为非空绝对路径: {vault_raw}")
 
     timezone = parser.get("instance", "timezone").strip()
     validate_timezone(timezone)
@@ -178,38 +284,26 @@ def load_instance_config(instance: str) -> InstanceConfig:
     if not is_valid_door(steward_door):
         raise ConfigError(f"配置中 doors.steward 编号非法: {steward_door}")
 
-    known_raw = parser.get("doors", "known").strip()
-    known_doors = tuple(d.strip() for d in known_raw.split(",") if d.strip())
-    if not known_doors:
-        raise ConfigError("配置中 doors.known 不能为空")
-    for door in known_doors:
-        if not is_valid_door(door):
-            raise ConfigError(f"配置中 doors.known 含非法端编号: {door}")
+    known_doors = tuple(d.strip() for d in parser.get("doors", "known").split(",") if d.strip())
+    if not known_doors or any(not is_valid_door(d) for d in known_doors):
+        raise ConfigError("配置中 doors.known 不能为空或含非法端编号")
     if steward_door not in known_doors:
         raise ConfigError(f"配置中 doors.steward ({steward_door}) 未包含在 doors.known 中")
 
-    domains_raw = parser.get("domains", "names").strip()
-    domains = tuple(d.strip() for d in domains_raw.split(",") if d.strip())
+    domains = tuple(d.strip() for d in parser.get("domains", "names").split(",") if d.strip())
     if not domains:
         raise ConfigError("配置中 domains.names 不能为空")
 
-    def _get_positive_int(key: str) -> int:
-        val_str = parser.get("limits", key).strip()
-        try:
-            val = int(val_str)
-        except ValueError as exc:
-            raise ConfigError(f"配置中 limits.{key} 必须为整数: {val_str}") from exc
-        if val <= 0:
-            raise ConfigError(f"配置中 limits.{key} 必须大于 0: {val}")
-        return val
-
-    agents_lines = _get_positive_int("agents_lines")
-    profile_lines = _get_positive_int("profile_lines")
-    status_index_lines = _get_positive_int("status_index_lines")
-    today_items = _get_positive_int("today_items")
-
-    local_only_raw = parser.get("privacy", "local_only").strip()
-    local_only = tuple(p.strip() for p in local_only_raw.split(",") if p.strip())
+    agents_lines = _parse_int_option(parser, "limits", "agents_lines", DEFAULT_AGENTS_LINES)
+    profile_lines = _parse_int_option(parser, "limits", "profile_lines", DEFAULT_PROFILE_LINES)
+    status_index_lines = _parse_int_option(
+        parser, "limits", "status_index_lines", DEFAULT_STATUS_INDEX_LINES
+    )
+    today_items = _parse_int_option(parser, "limits", "today_items", DEFAULT_TODAY_ITEMS)
+    local_only = tuple(
+        p.strip() for p in parser.get("privacy", "local_only").split(",") if p.strip()
+    )
+    adapters, jobs, window_days, stale_days, max_daily_calls = _parse_optional_sections(parser)
 
     return InstanceConfig(
         name=name,
@@ -224,4 +318,11 @@ def load_instance_config(instance: str) -> InstanceConfig:
         status_index_lines=status_index_lines,
         today_items=today_items,
         local_only=local_only,
+        adapters=adapters,
+        digest=jobs.get("digest", []),
+        weekly=jobs.get("weekly", []),
+        window_days=window_days,
+        stale_days=stale_days,
+        max_daily_calls=max_daily_calls,
+        jobs=jobs,
     )

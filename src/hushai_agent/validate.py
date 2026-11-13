@@ -14,6 +14,7 @@ from hushai_agent.inboxfmt import (
     parse_inbox_filename,
     parse_inbox_line,
 )
+from hushai_agent.items import ItemFormatError, parse_item_line
 
 REQUIRED_DIRS = (
     "hub",
@@ -223,6 +224,44 @@ def check_sync_conflicts(vault_path: Path) -> CheckItem:
     return CheckItem(id="sync-conflicts", level="OK", message="未发现同步冲突副本")
 
 
+def check_open_items(vault_path: Path) -> CheckItem:
+    """检查 hub/open-items.md 中以 '- [' 开头的行是否均符合开放项格式。"""
+    open_items_file = vault_path / "hub" / "open-items.md"
+    if not open_items_file.is_file():
+        return CheckItem(
+            id="open-items",
+            level="FAIL",
+            message="hub/open-items.md 不存在",
+        )
+
+    try:
+        lines = open_items_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        return CheckItem(
+            id="open-items",
+            level="FAIL",
+            message=f"open-items.md 无法读取 ({exc})",
+        )
+
+    errors: list[str] = []
+    for lineno, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped.startswith("- ["):
+            continue
+        try:
+            parse_item_line(stripped)
+        except ItemFormatError as exc:
+            errors.append(f"open-items.md:{lineno}: {exc}")
+
+    if errors:
+        return CheckItem(
+            id="open-items",
+            level="FAIL",
+            message=f"open-items.md 格式错误: {'; '.join(errors)}",
+        )
+    return CheckItem(id="open-items", level="OK", message="open-items.md 格式合法")
+
+
 def validate_vault(vault_path: str | Path) -> dict[str, Any]:
     """对指定 vault 路径执行无配置规范校验。"""
     vpath = Path(vault_path).expanduser().resolve()
@@ -230,6 +269,7 @@ def validate_vault(vault_path: str | Path) -> dict[str, Any]:
         check_vault_structure(vpath),
         check_inbox_names(vpath),
         check_inbox_lines(vpath, allowed_domains=None),
+        check_open_items(vpath),
         check_sync_conflicts(vpath),
     ]
     ok = all(item.level != "FAIL" for item in checks)

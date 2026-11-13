@@ -8,10 +8,12 @@ import sys
 from typing import Any, Sequence
 
 from hushai_agent import __version__
+from hushai_agent.cli_loop import dispatch_loop_command, register_loop_commands
 from hushai_agent.config import DEFAULT_LANG, DEFAULT_TIMEZONE, ConfigError
 from hushai_agent.doctor import run_doctor
 from hushai_agent.guard import GuardError
 from hushai_agent.inboxfmt import InboxFormatError
+from hushai_agent.items import ItemFormatError
 from hushai_agent.validate import validate_vault
 from hushai_agent.vault import add_inbox_entry, init_instance
 
@@ -81,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--time", default=None, help="指定时间 HH:MM（默认当前实例时区时间）")
     p_add.add_argument("--auto", action="store_true", help="写入 -auto.md 自动记录文件")
 
+    register_loop_commands(subparsers)
     return parser
 
 
@@ -141,10 +144,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"已追加收件至: {inbox_path}")
             return 0
 
+        loop_rc = dispatch_loop_command(args)
+        if loop_rc is not None:
+            return loop_rc
+
         print(f"未知命令: {args.command}", file=sys.stderr)
         return 1
 
-    except (ConfigError, InboxFormatError, GuardError, ValueError, OSError) as exc:
+    except (ConfigError, InboxFormatError, ItemFormatError, GuardError, ValueError, OSError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 

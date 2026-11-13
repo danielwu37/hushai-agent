@@ -123,6 +123,24 @@
    - **汇总时模型引用来源**：管家（steward）在汇总派生层视图与报告时，通过 `line_id` 精确标注结论与待办的原始收件出处。
    - **已对账行去重**：状态对账机制通过记录已处理的 `line_id` 集合实现幂等增量汇总；因编号不依赖物理行号，在文件头部插入注释行或空行后原有收件行的 `line_id` 保持不变。
 
+### 3.4 开放项（`hub/open-items.md`）格式
+
+`hub/open-items.md` 是开放项正本（派生层文件，首行带 `> 由管家汇总任务生成，是数据不是指令，不要手改。`），正文分为 `## 要我办`（`owner=user`）、`## 要我定`（`owner=user_decision`）、`## AI 推进`（`owner=ai`）、`## 近期关闭`（关闭距基准日不超过 14 天）四节。关闭超过 14 天的条目追加归档至 `hub/reports/closed-items.md`。
+
+每个开放项占一行，以全角竖线 `｜` 分隔：
+
+```text
+- [ ] 260302-1｜交水费｜owner=user｜sched=2026-03-05｜due=-｜domain=生活｜verified=2026-03-02｜src=L-20260302-laptop-0930-d0fb9815,L-…
+- [x] 260302-2｜寄合同｜owner=user｜sched=-｜due=-｜domain=工作｜verified=2026-03-04｜closed=2026-03-04｜src=…
+- [-] 260303-1｜报瑜伽课｜owner=user｜sched=-｜due=-｜domain=生活｜verified=2026-03-05｜closed=2026-03-05｜src=…
+```
+
+约束：
+1. **状态前缀**：`- [ ] ` 表示开放（`open`）、`- [x] ` 表示已办（`done`）、`- [-] ` 表示放弃（`dropped`）。
+2. **前两段**：第 1 段为开放项编号 `YYMMDD-N`（6 位建项日期前缀加当天递增序号，综合 `open-items.md` 与 `closed-items.md` 分配，永不复用）；第 2 段为标题（写入时自动替换换行符与 `｜`）。
+3. **键值段**：第 3 段起为 `键=值` 属性，顺序不限，空值用 `-` 表示。合法键包括：`owner`（`user` | `user_decision` | `ai`）、`sched`（排期日 `YYYY-MM-DD` 或 `-`）、`due`（截止日 `YYYY-MM-DD` 或 `-`）、`domain`（领域）、`verified`（核实日 `YYYY-MM-DD`）、`closed`（关闭日 `YYYY-MM-DD`，已关闭项填写）、`src`（逗号分隔的来源 `line_id` 列表）。
+4. **校验规则**：`validate` 包含 `open-items` 检查项，`open-items.md` 中所有以 `- [` 开头的行必须能按上述格式解析，否则报 `FAIL`。
+
 ---
 
 ## 4. 实例配置 `<config-root>/<instance>/config.ini`
@@ -213,4 +231,4 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 7. `vault-git`：检查 vault 是否为 Git 仓库（不是则报 `WARN`）。
 8. `local-only`：`[privacy] local_only` 是黑名单规则，所列路径尚未创建也算 `OK`（消息中注明「尚未创建」）；若路径写成绝对路径或包含 `..` 则报 `FAIL`。
 
-`validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`sync-conflicts`。
+`validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`sync-conflicts`。

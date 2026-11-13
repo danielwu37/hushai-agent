@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import datetime
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
-from zoneinfo import ZoneInfo
 
+from hushai_agent import clock
 from hushai_agent.config import (
     DEFAULT_LANG,
     DEFAULT_TIMEZONE,
@@ -244,10 +243,9 @@ def add_inbox_entry(
     if clean_domain not in cfg.allowed_domains:
         raise ValueError(f"非法领域 '{clean_domain}'（不在实例允许的领域列表中）")
 
-    tz = ZoneInfo(cfg.timezone)
-    now = datetime.datetime.now(tz)
-    date_str = now.strftime("%Y-%m-%d")
-    actual_time = time_str.strip() if time_str else now.strftime("%H:%M")
+    current_dt = clock.now(cfg)
+    date_str = current_dt.strftime("%Y-%m-%d")
+    actual_time = time_str.strip() if time_str else current_dt.strftime("%H:%M")
 
     formatted_line = format_inbox_line(
         time_str=actual_time,
