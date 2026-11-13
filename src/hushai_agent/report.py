@@ -52,6 +52,28 @@ def render_daily(summary: dict[str, Any]) -> str:
             sched = item.get("sched") or "-"
             lines.append(f"- [推迟至 {sched}] {item['id']}｜{item['title']}")
 
+    lines.extend(["", "## 已关闭的事项又有新记录"])
+    touched_closed = summary.get("touched_closed") or []
+    if not touched_closed:
+        lines.append("（无）")
+    else:
+        title_map = {
+            str(c["id"]): str(c.get("title", ""))
+            for c in (summary.get("closed") or []) + (summary.get("created") or [])
+            if isinstance(c, dict) and "id" in c
+        }
+        for entry in touched_closed:
+            if isinstance(entry, dict):
+                tid = str(entry.get("id", ""))
+                ttitle = str(entry.get("title", "")) or title_map.get(tid, "")
+            else:
+                tid = str(entry)
+                ttitle = title_map.get(tid, "")
+            if ttitle:
+                lines.append(f"- {tid}｜{ttitle}")
+            else:
+                lines.append(f"- {tid}")
+
     lines.extend(["", "## 未对上号的机械动作"])
     unmatched = summary.get("unmatched") or []
     if not unmatched:

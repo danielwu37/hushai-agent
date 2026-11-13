@@ -165,8 +165,10 @@ class TestM2aLoop(unittest.TestCase):
         sel = todaysel.select_today(open_items, "2026-03-03", limit=7)
         (self.vault / "hub" / "today.md").write_text(todaysel.render_today(sel, "2026-03-03"), encoding="utf-8")
 
-        # defer 缺 --to 报错且不生成收件文件
-        self.assertNotEqual(self.run_cli("todo", "defer", "1", "--instance", "demo").returncode, 0)
+        # defer 非法 --to 报错且不生成收件文件
+        self.assertNotEqual(
+            self.run_cli("todo", "defer", "1", "--to", "invalid-date", "--instance", "demo").returncode, 0
+        )
         # 已关闭项报错且不写文件
         self.assertNotEqual(self.run_cli("todo", "done", "260301-1", "--instance", "demo").returncode, 0)
         self.assertEqual(list((self.vault / "hub" / "inbox").glob("*.md")), [])

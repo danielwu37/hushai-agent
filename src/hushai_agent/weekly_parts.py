@@ -73,8 +73,8 @@ WEEKLY_SCHEMA: dict[str, Any] = {
 
 
 def _collect_7d_lines(cfg: InstanceConfig, as_of_date: FlexDate) -> list[InboxRecord]:
-    """收集最近 7 天（[as_of - 7d, as_of]）的全部合法收件行（不看游标）。"""
-    start_date = as_of_date - datetime.timedelta(days=7)
+    """收集最近 7 天（[as_of - 6d, as_of]，含基准日共 7 天）的全部合法收件行（不看游标）。"""
+    start_date = as_of_date - datetime.timedelta(days=6)
     inbox_dir = cfg.vault / "hub" / "inbox"
     checked: set[Path] = set()
     recs: list[InboxRecord] = []

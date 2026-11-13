@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from hushai_agent.config_loop import (
     DEFAULT_MAX_DAILY_CALLS,
     DEFAULT_STALE_DAYS,
+    DEFAULT_STATUS_ARCHIVE_DAYS,
     DEFAULT_WINDOW_DAYS,
     VALID_TIERS,
     ConfigError,
@@ -52,6 +53,7 @@ __all__ = [
     "DEFAULT_MAX_DAILY_CALLS",
     "DEFAULT_PROFILE_LINES",
     "DEFAULT_STALE_DAYS",
+    "DEFAULT_STATUS_ARCHIVE_DAYS",
     "DEFAULT_STATUS_INDEX_LINES",
     "DEFAULT_STEWARD_DOOR",
     "DEFAULT_TIMEZONE",
@@ -90,6 +92,7 @@ class InstanceConfig:
     weekly: list[tuple[str, str]] = field(default_factory=list)
     window_days: int = DEFAULT_WINDOW_DAYS
     stale_days: int = DEFAULT_STALE_DAYS
+    status_archive_days: int = DEFAULT_STATUS_ARCHIVE_DAYS
     max_daily_calls: int = DEFAULT_MAX_DAILY_CALLS
     jobs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
@@ -152,6 +155,7 @@ def render_default_config(
         "weekly =",
         f"window_days = {DEFAULT_WINDOW_DAYS}",
         f"stale_days = {DEFAULT_STALE_DAYS}",
+        f"status_archive_days = {DEFAULT_STATUS_ARCHIVE_DAYS}",
         "",
         "[budget]",
         f"max_daily_calls = {DEFAULT_MAX_DAILY_CALLS}",
@@ -248,7 +252,14 @@ def load_instance_config(instance: str) -> InstanceConfig:
     local_only = tuple(
         p.strip() for p in parser.get("privacy", "local_only").split(",") if p.strip()
     )
-    adapters, jobs, window_days, stale_days, max_daily_calls = _parse_optional_sections(parser)
+    (
+        adapters,
+        jobs,
+        window_days,
+        stale_days,
+        status_archive_days,
+        max_daily_calls,
+    ) = _parse_optional_sections(parser)
 
     return InstanceConfig(
         name=name,
@@ -268,6 +279,7 @@ def load_instance_config(instance: str) -> InstanceConfig:
         weekly=jobs.get("weekly", []),
         window_days=window_days,
         stale_days=stale_days,
+        status_archive_days=status_archive_days,
         max_daily_calls=max_daily_calls,
         jobs=jobs,
     )

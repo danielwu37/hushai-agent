@@ -230,13 +230,16 @@ def apply_actions(
                 target_item.status = "done"
                 target_item.closed = rec_date
                 target_item.verified = rec_date
+                setattr(target_item, "_closed_this_round", True)
             elif act.kind == "drop":
                 target_item.status = "dropped"
                 target_item.closed = rec_date
                 target_item.verified = rec_date
+                setattr(target_item, "_closed_this_round", True)
             elif act.kind == "defer":
                 target_item.sched = act.date
                 target_item.verified = rec_date
+                target_item.defers += 1
 
             if rec.line_id not in target_item.src:
                 target_item.src.append(rec.line_id)

@@ -12,6 +12,7 @@ from hushai_agent.validate import (
     CheckItem,
     check_inbox_lines,
     check_inbox_names,
+    check_open_items,
     check_sync_conflicts,
     check_vault_structure,
 )
@@ -48,7 +49,7 @@ def _check_limits(cfg: InstanceConfig) -> CheckItem:
             todo_count = sum(
                 1
                 for line in lines
-                if line.startswith(("- [ ]", "- [x]", "- [X]"))
+                if line.startswith(("- [ ]", "- [x]", "- [X]", "- [-]", "- [>]"))
             )
             if todo_count > cfg.today_items:
                 violations.append(
@@ -146,6 +147,7 @@ def run_doctor(instance: str) -> dict[str, Any]:
     checks.append(_check_limits(cfg))
     checks.append(check_inbox_names(cfg.vault))
     checks.append(check_inbox_lines(cfg.vault, allowed_domains=cfg.allowed_domains))
+    checks.append(check_open_items(cfg.vault))
     checks.append(check_sync_conflicts(cfg.vault))
     checks.append(_check_state_dir(instance))
     checks.append(_check_vault_git(cfg.vault))

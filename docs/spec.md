@@ -138,8 +138,8 @@
 约束：
 1. **状态前缀**：`- [ ] ` 表示开放（`open`）、`- [x] ` 表示已办（`done`）、`- [-] ` 表示放弃（`dropped`）。
 2. **前两段**：第 1 段为开放项编号 `YYMMDD-N`（6 位建项日期前缀加当天递增序号，综合 `open-items.md` 与 `closed-items.md` 分配，永不复用）；第 2 段为标题（写入时自动替换换行符与 `｜`）。
-3. **键值段**：第 3 段起为 `键=值` 属性，顺序不限，空值用 `-` 表示。合法键包括：`owner`（`user` | `user_decision` | `ai`）、`sched`（排期日 `YYYY-MM-DD` 或 `-`）、`due`（截止日 `YYYY-MM-DD` 或 `-`）、`domain`（领域）、`verified`（核实日 `YYYY-MM-DD`）、`closed`（关闭日 `YYYY-MM-DD`，已关闭项填写）、`src`（逗号分隔的来源 `line_id` 列表）。
-4. **校验规则**：`validate` 包含 `open-items` 检查项，`open-items.md` 中所有以 `- [` 开头的行必须能按上述格式解析，否则报 `FAIL`。
+3. **键值段**：第 3 段起为 `键=值` 属性，顺序不限，空值用 `-` 表示。合法键包括：`owner`（`user` | `user_decision` | `ai`）、`sched`（排期日 `YYYY-MM-DD` 或 `-`）、`due`（截止日 `YYYY-MM-DD` 或 `-`）、`domain`（领域）、`verified`（核实日 `YYYY-MM-DD`）、`closed`（关闭日 `YYYY-MM-DD`，已关闭项填写）、`defers`（可选，推迟次数非负整数，缺省视为 `0`，每次机械或模型推迟加 1）、`src`（逗号分隔的来源 `line_id` 列表，无来源时填 `-`）。
+4. **校验规则**：`validate` 与 `doctor` 均包含 `open-items` 检查项，`open-items.md` 中所有以 `- [` 开头的行必须能按上述格式解析，否则报 `FAIL`。
 
 ### 3.5 近况（`hub/status.md`）与近况索引（`hub/status-index.md`）格式
 
@@ -154,6 +154,12 @@
 2. **更新规则（upsert）**：以 `（领域，事项名）` 为联合键；同名事项更新 `summary` 与 `verified`，`src` 列表合并去重。
 3. **过期核实标记**：渲染 `status.md` 时，若 `verified` 距基准日 `as_of` 超过 `stale_days`（默认 14 天），在 `summary` 末尾追加 `（状态未核实）`；解析时自动去掉该后缀，不得累积。
 4. **近况索引（`hub/status-index.md`）**：由 `status.md` 机械生成，头部引用块说明「只有事项名，没有状态；要状态读 status.md」，每行格式为 `- <领域>｜<事项名>`。
+5. **近况归档与硬上限**：`weekly` 将 `verified` 距基准日超过 `[jobs] status_archive_days`（默认 28 天）的近况行追加至 `hub/reports/status-archive.md` 并从 `status.md` 移除；每次汇总写 `status.md` 时，若生成的 `status-index.md` 行数超过 `[limits] status_index_lines`，按 `verified` 从旧到新归档至 `status-archive.md` 直到不超上限，两处均重新生成索引。
+
+### 3.6 今日待办（`hub/today.md`）与日报累积状态
+
+- `today.md` 支持四种条目状态：`- [ ]`（仍开放且排期不晚于目标日）、`- [x]`（已办）、`- [-]`（已放弃）、`- [>]`（仍开放但排期晚于目标日）。当开放条目的 `defers >= 3` 时，括号内追加 `已推迟 N 次，建议放弃`。
+- `<状态目录>/daily/<日期>.json` 累积当天每次运行（`digest` 与即时机械对账）的事实，每次据此重新渲染 `hub/reports/daily-<日期>.md`（含「已关闭的事项又有新记录」节）；演练模式不写累积文件。
 
 ---
 
@@ -190,6 +196,13 @@ today_items = 7
 
 [privacy]
 local_only = domains/health
+
+[jobs]
+digest =
+weekly =
+window_days = 14
+stale_days = 14
+status_archive_days = 28
 ```
 
 字段说明：
@@ -228,9 +241,15 @@ local_only = domains/health
 | --- | --- |
 | `hushai version` | 打印版本号 |
 | `hushai init --instance NAME --vault PATH [--timezone TZ] [--lang zh\|en] [--no-git]` | 初始化 vault、配置与状态目录（幂等，只补缺不覆盖；若在已有提交的 Git 仓库中补回了缺失文件，只 `git add` 本次补齐的文件并提交一次，未补文件则不提交） |
-| `hushai doctor --instance NAME [--json]` | 对指定实例执行 8 项体检，存在 `FAIL` 返回 1，否则返回 0 |
+| `hushai doctor --instance NAME [--json]` | 对指定实例执行 9 项体检，存在 `FAIL` 返回 1，否则返回 0 |
 | `hushai validate PATH [--json]` | 无需配置校验任意 vault 目录，存在 `FAIL` 返回 1，否则返回 0 |
-| `hushai inbox add --instance NAME --door ID --domain D --did TEXT [--artifact X] [--todo Y] [--time HH:MM] [--auto]` | 向实例当天该端的收件文件追加一行 |
+| `hushai inbox add --instance NAME --door ID --domain D --did TEXT [--artifact X] [--todo Y] [--time HH:MM] [--auto]` | 向实例当天该端的收件文件追加一行；若为机械动作或保留领域则自动触发一次即时机械对账 |
+| `hushai digest --instance NAME [--date YYYY-MM-DD] [--for-date YYYY-MM-DD] [--dry-run] [--json]` | 执行每日收件对账与派生视图汇总 |
+| `hushai reconcile --instance NAME [--json]` | 手动触发一次即时纯机械对账（不调用模型） |
+| `hushai weekly --instance NAME [--date YYYY-MM-DD] [--dry-run] [--json]` | 执行每周近况归档、洞察重写与周报生成 |
+| `hushai today --instance NAME [--json]` | 读取 `today.md` 四种状态并叠加尚未进游标的机械动作 |
+| `hushai todo done\|defer\|drop TARGET --instance NAME [--to YYYY-MM-DD\|+Nd] [--door ID]` | 回写待办动作并触发即时机械对账（`defer` 省略 `--to` 时默认今天加 7 天） |
+| `hushai ledger --instance NAME [--limit N] [--json]` | 查看运行账本记录 |
 
 ### Doctor 检查项清单
 
@@ -238,11 +257,12 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 
 1. `config`：配置可读、字段齐全、时区合法（异常为 `FAIL`）。
 2. `vault-structure`：规范要求的目录和文件齐全（缺失为 `FAIL`）。
-3. `limits`：`AGENTS.md`、`profile.md`、`status-index.md` 行数不超上限；`today.md` 中以 `- [ ]` 或 `- [x]` 开头的条目数不超 `today_items`（超限为 `FAIL`）。
+3. `limits`：`AGENTS.md`、`profile.md`、`status-index.md` 行数不超上限；`today.md` 中以 `- [ ]`、`- [x]`、`- [-]`、`- [>]` 开头的条目数不超 `today_items`（超限为 `FAIL`）。
 4. `inbox-names`、`inbox-lines`：收件文件名与行格式合法（含领域检查，非法为 `FAIL`）。
-5. `sync-conflicts`：扫描同步冲突副本（不限 `.md` 扩展名）。文件名含 `conflict`（忽略大小写）、含 `冲突`、含 `.sync-conflict-` 直接命中；形如 `名字 数字.扩展名` 或 `名字 (1).扩展名` 的文件，仅当同目录下同时存在去掉尾部序号的原文件（如 `today.md` 与 `today 2.md`）时才算冲突，命中报 `WARN` 并列出。
-6. `state-dir`：状态目录存在且可写（异常为 `FAIL`）。
-7. `vault-git`：检查 vault 是否为 Git 仓库（不是则报 `WARN`）。
-8. `local-only`：`[privacy] local_only` 是黑名单规则，所列路径尚未创建也算 `OK`（消息中注明「尚未创建」）；若路径写成绝对路径或包含 `..` 则报 `FAIL`。
+5. `open-items`：`hub/open-items.md` 中所有以 `- [` 开头的行格式合法（非法为 `FAIL`）。
+6. `sync-conflicts`：扫描同步冲突副本（不限 `.md` 扩展名）。文件名含 `conflict`（忽略大小写）、含 `冲突`、含 `.sync-conflict-` 直接命中；形如 `名字 数字.扩展名` 或 `名字 (1).扩展名` 的文件，仅当同目录下同时存在去掉尾部序号的原文件（如 `today.md` 与 `today 2.md`）时才算冲突，命中报 `WARN` 并列出。
+7. `state-dir`：状态目录存在且可写（异常为 `FAIL`）。
+8. `vault-git`：检查 vault 是否为 Git 仓库（不是则报 `WARN`）。
+9. `local-only`：`[privacy] local_only` 是黑名单规则，所列路径尚未创建也算 `OK`（消息中注明「尚未创建」）；若路径写成绝对路径或包含 `..` 则报 `FAIL`。
 
 `validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`sync-conflicts`。

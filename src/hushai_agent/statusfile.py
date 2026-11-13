@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from hushai_agent.config import DEFAULT_STALE_DAYS, InstanceConfig
-from hushai_agent.fsio import atomic_write, read_for_prompt
+from hushai_agent.fsio import append_line, atomic_write, read_for_prompt
 from hushai_agent.items import FlexDate, ItemFormatError
 
 STATUS_HEADER_QUOTE = (
@@ -197,6 +197,63 @@ def render_index(rows: Iterable[StatusRow]) -> str:
     return "\n".join(lines)
 
 
+def format_status_row(row: StatusRow) -> str:
+    """将单条近况格式化为不带未核实后缀的标准单行文本。"""
+    clean_sum = _strip_stale_suffix(row.summary)
+    ver_s = row.verified.isoformat() if row.verified else "-"
+    src_s = ",".join(row.src) if row.src else "-"
+    return f"- {row.domain}｜{row.topic}｜{clean_sum}｜verified={ver_s}｜src={src_s}"
+
+
+def split_archive_by_age(
+    rows: Iterable[StatusRow],
+    as_of: datetime.date | str,
+    archive_days: int,
+) -> tuple[list[StatusRow], list[StatusRow]]:
+    """将 verified 距基准日超过 archive_days 的近况行分流至 archive，其余保留在 keep。"""
+    ref_date = FlexDate.from_any(as_of)
+    if ref_date is None:
+        raise ValueError(f"非法基准日期 as_of: {as_of!r}")
+    keep: list[StatusRow] = []
+    archive: list[StatusRow] = []
+    for row in rows:
+        if row.verified is not None and (ref_date - row.verified).days > archive_days:
+            archive.append(row)
+        else:
+            keep.append(row)
+    return keep, archive
+
+
+def trim_for_index_limit(
+    rows: Iterable[StatusRow],
+    max_index_lines: int,
+) -> tuple[list[StatusRow], list[StatusRow]]:
+    """若生成的 status-index.md 行数超过 max_index_lines，按 verified 从旧到新归档直到不超。"""
+    keep = list(rows)
+    archived: list[StatusRow] = []
+    while keep and len(render_index(keep).splitlines()) > max_index_lines:
+        oldest_idx = min(
+            range(len(keep)),
+            key=lambda idx: (
+                keep[idx].verified.isoformat() if keep[idx].verified is not None else "",
+                idx,
+            ),
+        )
+        archived.append(keep.pop(oldest_idx))
+    return keep, archived
+
+
+def append_status_archive(
+    archive_path: Path,
+    archived_rows: Iterable[StatusRow],
+    roots: Iterable[Path],
+) -> None:
+    """将归档的近况行追加写入 hub/reports/status-archive.md。"""
+    root_list = list(roots)
+    for row in archived_rows:
+        append_line(archive_path, format_status_row(row), root_list)
+
+
 def load(cfg: InstanceConfig | Path | str) -> list[StatusRow]:
     """从 <vault>/hub/status.md 读取并解析近况行。"""
     vault = cfg.vault if isinstance(cfg, InstanceConfig) else Path(cfg)
@@ -214,8 +271,12 @@ def save(
     as_of: datetime.date | str,
     stale_days: int = DEFAULT_STALE_DAYS,
 ) -> None:
-    """将 status.md 与 status-index.md 原子写入 <vault>/hub/。"""
+    """将 status.md 与 status-index.md 原子写入 <vault>/hub/（超索引行数上限时自动归档最旧行）。"""
     vault = cfg.vault if isinstance(cfg, InstanceConfig) else Path(cfg)
     row_list = list(rows)
+    if isinstance(cfg, InstanceConfig):
+        row_list, archived = trim_for_index_limit(row_list, cfg.status_index_lines)
+        if archived:
+            append_status_archive(vault / "hub" / "reports" / "status-archive.md", archived, [vault])
     atomic_write(vault / "hub" / "status.md", render_status(row_list, as_of, stale_days), [vault])
     atomic_write(vault / "hub" / "status-index.md", render_index(row_list), [vault])

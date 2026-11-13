@@ -36,10 +36,11 @@ def _archive_and_prune_insights(
     as_of_str: str,
     roots: list[Path],
 ) -> Path:
-    """归档旧 insights.md 并只保留最近 4 份。"""
+    """归档旧 insights.md 并只保留最近 4 份（同日重跑若归档已存在则不覆盖）。"""
     arch_dir = target_hub / "reports" / "insights-archive"
     arch_file = arch_dir / f"insights-{as_of_str}.md"
-    atomic_write(arch_file, old_content, roots)
+    if not arch_file.exists():
+        atomic_write(arch_file, old_content, roots)
 
     existing = sorted(arch_dir.glob("insights-*.md"), key=lambda p: p.name)
     while len(existing) > 4:
@@ -73,7 +74,10 @@ def run_weekly(
 
     try:
         all_items = items.load(inst_cfg)
-        status_rows = statusfile.load(inst_cfg)
+        raw_status_rows = statusfile.load(inst_cfg)
+        status_rows, archived_status = statusfile.split_archive_by_age(
+            raw_status_rows, as_of_date, inst_cfg.status_archive_days
+        )
         overdue_items = [
             it for it in all_items if it.status == "open" and it.due is not None and it.due < as_of_date
         ]
@@ -112,6 +116,23 @@ def run_weekly(
         state_dir = get_instance_state_dir(inst_cfg.name)
         target_hub = (state_dir / "dry-run" / as_of_str / "hub") if dry_run else (inst_cfg.vault / "hub")
         roots = [state_dir] if dry_run else [inst_cfg.vault]
+
+        if archived_status:
+            statusfile.append_status_archive(
+                target_hub / "reports" / "status-archive.md",
+                archived_status,
+                roots,
+            )
+            atomic_write(
+                target_hub / "status.md",
+                statusfile.render_status(status_rows, as_of_date, inst_cfg.stale_days),
+                roots,
+            )
+            atomic_write(
+                target_hub / "status-index.md",
+                statusfile.render_index(status_rows),
+                roots,
+            )
 
         old_insights_path = inst_cfg.vault / "hub" / "insights.md"
         old_insights_text = (

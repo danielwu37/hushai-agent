@@ -20,12 +20,14 @@ def apply_model_output(
     status_rows: list[StatusRow],
     model_data: dict[str, Any] | None,
     as_of_date: FlexDate,
+    pre_open_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """将模型返回的 items 与 status_rows 应用到内存中的开放项和近况列表。"""
     created_items: list[OpenItem] = []
     closed_items: list[OpenItem] = []
     deferred_items: list[OpenItem] = []
     ignored_refs: list[str] = []
+    touched_closed: list[str] = []
 
     if model_data is None:
         return {
@@ -33,9 +35,19 @@ def apply_model_output(
             "closed": closed_items,
             "deferred": deferred_items,
             "ignored": ignored_refs,
+            "touched_closed": touched_closed,
         }
 
     item_map: dict[str, OpenItem] = {it.id: it for it in all_items}
+    closed_this_round_ids = {
+        it.id
+        for it in all_items
+        if it.status != "open"
+        and (
+            (pre_open_ids is not None and it.id in pre_open_ids)
+            or getattr(it, "_closed_this_round", False)
+        )
+    }
 
     for entry in model_data.get("items", []):
         ref = entry.get("ref")
@@ -66,7 +78,17 @@ def apply_model_output(
 
         ref_id = str(ref).strip()
         target = item_map.get(ref_id)
-        if target is None or target.status != "open":
+        if target is None:
+            ignored_refs.append(ref_id)
+            continue
+        if ref_id in closed_this_round_ids:
+            for sid in srcs:
+                if sid not in target.src:
+                    target.src.append(sid)
+            if ref_id not in touched_closed:
+                touched_closed.append(ref_id)
+            continue
+        if target.status != "open":
             ignored_refs.append(ref_id)
             continue
 
@@ -84,6 +106,8 @@ def apply_model_output(
                 target.sched = sched
             if due is not None:
                 target.due = due
+            if status == "deferred":
+                target.defers += 1
             if status == "deferred" or sched is not None:
                 deferred_items.append(target)
 
@@ -107,6 +131,7 @@ def apply_model_output(
         "closed": closed_items,
         "deferred": deferred_items,
         "ignored": ignored_refs,
+        "touched_closed": touched_closed,
     }
 
 

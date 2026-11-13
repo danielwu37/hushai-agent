@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from hushai_agent import clock
+from hushai_agent import clock, mechanical
 from hushai_agent.config import (
     DEFAULT_LANG,
     DEFAULT_TIMEZONE,
@@ -19,6 +20,7 @@ from hushai_agent.config import (
 )
 from hushai_agent.fsio import append_line_with_header, atomic_write, ensure_dir
 from hushai_agent.inboxfmt import (
+    ALL_RESERVED_DOMAINS,
     format_inbox_filename,
     format_inbox_line,
     is_valid_door,
@@ -267,4 +269,13 @@ def add_inbox_entry(
 
     header = f"# {date_str} {door}"
     append_line_with_header(inbox_file, header, formatted_line, roots)
+
+    if clean_domain in ALL_RESERVED_DOMAINS or mechanical.parse_action(did) is not None:
+        try:
+            from hushai_agent import digest
+
+            digest.run_mechanical_only(cfg)
+        except Exception as exc:
+            print(f"提示: 即时机械对账未完成 ({exc})", file=sys.stderr)
+
     return inbox_file

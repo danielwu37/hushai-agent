@@ -97,8 +97,9 @@ def build_prompt(
     records: Iterable[InboxRecord],
     items: Iterable[OpenItem],
     as_of: datetime.date | str,
+    pre_open_ids: set[str] | None = None,
 ) -> str:
-    """将开放项、本轮收件行、基准日与领域列表填充至 digest.zh.md 提示词模板。"""
+    """将对账前开放的开放项、本轮收件行、基准日与领域列表填充至 digest.zh.md 提示词模板。"""
     as_of_date = FlexDate.from_any(as_of)
     if as_of_date is None:
         raise ValueError(f"非法基准日期 as_of: {as_of!r}")
@@ -113,11 +114,17 @@ def build_prompt(
 
     open_strs: list[str] = []
     for it in items:
-        if it.status != "open":
+        was_open = (
+            (pre_open_ids is not None and it.id in pre_open_ids)
+            or getattr(it, "_closed_this_round", False)
+        )
+        if it.status != "open" and not was_open:
             continue
+        is_closed_now = it.status != "open" and was_open
+        owner_col = f"{it.owner} closed-this-round" if is_closed_now else it.owner
         sched_s = it.sched.isoformat() if it.sched else "-"
         due_s = it.due.isoformat() if it.due else "-"
-        open_strs.append(f"{it.id}\t{it.owner}\t{sched_s}\t{due_s}\t{it.title}")
+        open_strs.append(f"{it.id}\t{owner_col}\t{sched_s}\t{due_s}\t{it.title}")
 
     tpl = _load_prompt_template("digest.zh.md")
     tpl = tpl.replace("{{TODAY}}", as_of_date.isoformat())

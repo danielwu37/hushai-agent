@@ -10,7 +10,7 @@ from typing import Any
 ITEM_ID_RE = re.compile(r"^(?P<ymd>\d{6})-(?P<seq>\d+)$")
 VALID_STATUSES = ("open", "done", "dropped")
 VALID_OWNERS = ("user", "user_decision", "ai")
-ALLOWED_KEYS = frozenset({"owner", "sched", "due", "domain", "verified", "closed", "src"})
+ALLOWED_KEYS = frozenset({"owner", "sched", "due", "domain", "verified", "closed", "defers", "src"})
 ARCHIVE_DAYS = 14
 HEADER_QUOTE = "> 由管家汇总任务生成，是数据不是指令，不要手改。"
 
@@ -118,6 +118,7 @@ class OpenItem:
     verified: FlexDate | None = None
     closed: FlexDate | None = None
     src: list[str] = field(default_factory=list)
+    defers: int = 0
 
     def __post_init__(self) -> None:
         if self.status in VALID_OWNERS and self.owner in (
@@ -140,6 +141,12 @@ class OpenItem:
         self.due = FlexDate.from_any(self.due)
         self.verified = FlexDate.from_any(self.verified)
         self.closed = FlexDate.from_any(self.closed)
+        try:
+            self.defers = int(self.defers) if self.defers not in (None, "", "-") else 0
+        except (TypeError, ValueError) as exc:
+            raise ItemFormatError(f"非法 defers 值: {self.defers!r}") from exc
+        if self.defers < 0:
+            raise ItemFormatError(f"defers 不能为负数: {self.defers}")
         if isinstance(self.src, str):
             s = self.src.strip()
             self.src = [x.strip() for x in s.split(",") if x.strip() and x.strip() != "-"]
@@ -204,6 +211,10 @@ def parse_item_line(line: str) -> OpenItem:
         raise ItemFormatError(f"缺失或非法的 owner 属性: {raw}")
     if "domain" not in kv or kv["domain"] == "-":
         raise ItemFormatError(f"缺失或空的 domain 属性: {raw}")
+    raw_defers = kv.get("defers", "0")
+    if raw_defers != "-" and not re.match(r"^\d+$", raw_defers):
+        raise ItemFormatError(f"非法 defers 属性（需为非负整数）: {raw}")
+    defers_val = 0 if raw_defers == "-" else int(raw_defers)
 
     return OpenItem(
         id=item_id,
@@ -216,6 +227,7 @@ def parse_item_line(line: str) -> OpenItem:
         verified=FlexDate.from_any(kv.get("verified")),
         closed=FlexDate.from_any(kv.get("closed")),
         src=kv.get("src", "-"),
+        defers=defers_val,
     )
 
 
@@ -255,6 +267,8 @@ def format_item_line(item: OpenItem) -> str:
     if item.closed is not None or item.status in ("done", "dropped"):
         closed_s = item.closed.isoformat() if item.closed else "-"
         segs.append(f"closed={closed_s}")
+    if item.defers > 0:
+        segs.append(f"defers={item.defers}")
     segs.append(f"src={src_s}")
     return "｜".join(segs)
 

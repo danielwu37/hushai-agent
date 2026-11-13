@@ -40,6 +40,12 @@ def register_loop_commands(subparsers: Any) -> None:
     p_digest = subparsers.add_parser("digest", help="执行每日收件对账与派生视图汇总")
     p_digest.add_argument("--instance", required=True, help="实例名称")
     p_digest.add_argument("--date", default=None, help="汇总基准日期 YYYY-MM-DD（默认当日）")
+    p_digest.add_argument(
+        "--for-date",
+        dest="for_date",
+        default=None,
+        help="今日待办目标日期 YYYY-MM-DD（默认基准日加一天）",
+    )
     p_digest.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run）")
     p_digest.add_argument("--json", action="store_true", help="以 JSON 格式输出摘要")
 
@@ -49,6 +55,11 @@ def register_loop_commands(subparsers: Any) -> None:
     p_weekly.add_argument("--date", default=None, help="基准日期 YYYY-MM-DD（默认当日）")
     p_weekly.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run）")
     p_weekly.add_argument("--json", action="store_true", help="以 JSON 格式输出摘要")
+
+    # 6. reconcile
+    p_reconcile = subparsers.add_parser("reconcile", help="立即执行一次纯机械对账（不调用模型）")
+    p_reconcile.add_argument("--instance", required=True, help="实例名称")
+    p_reconcile.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
 
 def _print_digest_summary(summary: dict[str, Any], as_json: bool) -> int:
@@ -114,7 +125,14 @@ def dispatch_loop_command(args: argparse.Namespace) -> int | None:
     if args.command == "digest":
         cfg = load_instance_config(args.instance)
         as_of = args.date.strip() if args.date and args.date.strip() else clock.today(cfg)
-        summary = digest.run_digest(cfg, as_of=as_of, dry_run=bool(args.dry_run))
+        for_date = (
+            args.for_date.strip()
+            if getattr(args, "for_date", None) and args.for_date.strip()
+            else None
+        )
+        summary = digest.run_digest(
+            cfg, as_of=as_of, dry_run=bool(args.dry_run), for_date=for_date
+        )
         return _print_digest_summary(summary, as_json=bool(args.json))
 
     if args.command == "weekly":
@@ -122,5 +140,19 @@ def dispatch_loop_command(args: argparse.Namespace) -> int | None:
         as_of = args.date.strip() if args.date and args.date.strip() else clock.today(cfg)
         summary = weekly.run_weekly(cfg, as_of=as_of, dry_run=bool(args.dry_run))
         return _print_weekly_summary(summary, as_json=bool(args.json))
+
+    if args.command == "reconcile":
+        cfg = load_instance_config(args.instance)
+        res = digest.run_mechanical_only(cfg)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        elif res.get("skipped"):
+            print(f"机械对账跳过: {res['skipped']}")
+        else:
+            print(
+                f"机械对账完成 ({res.get('date', '')}): 处理 {res.get('processed_lines', 0)} 行, "
+                f"应用动作 {res.get('mechanical_applied', 0)} 条"
+            )
+        return 0
 
     return None

@@ -1,4 +1,4 @@
-"""M2a 每日闭环底座单元测试（第 1-6 项，并导入第 7-10 项测试类）。"""
+"""M2a 每日闭环底座单元测试（第 1-6 项）。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from hushai_agent import adapters, clock, ledger, lock, runner  # noqa: E402
 from hushai_agent.config import ConfigError, load_instance_config, parse_fallback_chain  # noqa: E402
 from hushai_agent.inboxscan import iter_inbox_lines  # noqa: E402
 from hushai_agent.vault import add_inbox_entry, init_instance  # noqa: E402
-from test_m2a_loop import TestM2aLoop  # noqa: E402,F401
 
 
 class TestM2aBase(unittest.TestCase):

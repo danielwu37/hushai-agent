@@ -6,27 +6,18 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    collect,
-    cursor,
-    items,
-    judge,
-    ledger,
-    lock,
-    mechanical,
-    report,
-    runner,
-    statusfile,
-    todaysel,
+    collect, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.digest_apply import (
-    apply_model_output,
-    build_candidate_and_correction_lines,
-    commit_hub_if_git,
+    apply_model_output, build_candidate_and_correction_lines, commit_hub_if_git,
 )
 from hushai_agent.fsio import append_line, atomic_write
 from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
+from hushai_agent.reconcile import run_mechanical_only, update_daily_state
+
+__all__ = ["run_digest", "run_mechanical_only"]
 
 
 def _resolve_cfg(cfg: InstanceConfig | str) -> InstanceConfig:
@@ -37,6 +28,7 @@ def run_digest(
     cfg: InstanceConfig | str,
     as_of: datetime.date | str,
     dry_run: bool = False,
+    for_date: datetime.date | str | None = None,
 ) -> dict[str, Any]:
     """执行指定基准日期的每日汇总主流程，返回汇总摘要字典。"""
     inst_cfg = _resolve_cfg(cfg)
@@ -45,23 +37,26 @@ def run_digest(
         raise ValueError(f"非法基准日期 as_of: {as_of!r}")
     as_of_str = as_of_date.isoformat()
 
+    if for_date is None or (isinstance(for_date, str) and not for_date.strip()):
+        target_for_date = FlexDate(as_of_date.year, as_of_date.month, as_of_date.day) + datetime.timedelta(days=1)
+    else:
+        parsed_for = FlexDate.from_any(for_date)
+        if parsed_for is None:
+            raise ValueError(f"非法目标日期 for_date: {for_date!r}")
+        target_for_date = parsed_for
+
     try:
         lock_ctx = lock.runner_lock(inst_cfg)
-        lock_file = lock_ctx.__enter__()
+        lock_ctx.__enter__()
     except lock.LockBusy:
         ledger.record(
-            inst_cfg,
-            "job",
-            job="digest",
-            date=as_of_str,
-            dry_run=dry_run,
-            result="failed",
-            note="lock-busy",
+            inst_cfg, "job", job="digest", date=as_of_str, dry_run=dry_run, result="failed", note="lock-busy"
         )
         raise
 
     try:
         all_items = items.load(inst_cfg)
+        pre_open_ids = {it.id for it in all_items if it.status == "open"}
         archived_ids = items.load_archived_ids(inst_cfg)
         status_rows = statusfile.load(inst_cfg)
         records = collect.collect(inst_cfg, as_of_date)
@@ -122,6 +117,7 @@ def run_digest(
             status_rows=status_rows,
             model_data=model_data,
             as_of_date=as_of_date,
+            pre_open_ids=pre_open_ids,
         )
         cand_lines, corr_lines = build_candidate_and_correction_lines(
             as_of_date=as_of_date,
@@ -130,11 +126,11 @@ def run_digest(
             model_data=model_data,
         )
 
-        for_date = FlexDate(as_of_date.year, as_of_date.month, as_of_date.day) + datetime.timedelta(
-            days=1
+        today_selected = todaysel.select_today(all_items, target_for_date, inst_cfg.today_items)
+        today_text = todaysel.render_today(today_selected, target_for_date, degraded=degraded)
+        status_rows, archived_status = statusfile.trim_for_index_limit(
+            status_rows, inst_cfg.status_index_lines
         )
-        today_selected = todaysel.select_today(all_items, for_date, inst_cfg.today_items)
-        today_text = todaysel.render_today(today_selected, for_date, degraded=degraded)
         status_text = statusfile.render_status(status_rows, as_of_date, inst_cfg.stale_days)
         index_text = statusfile.render_index(status_rows)
 
@@ -143,7 +139,7 @@ def run_digest(
 
         summary: dict[str, Any] = {
             "date": as_of_str,
-            "for_date": for_date.isoformat(),
+            "for_date": target_for_date.isoformat(),
             "dry_run": dry_run,
             "new_lines": len(records),
             "by_door": by_door,
@@ -182,6 +178,7 @@ def run_digest(
                 }
                 for it in all_deferred
             ],
+            "touched_closed": applied_info["touched_closed"],
             "ignored": applied_info["ignored"],
             "dropped": len(dropped_entries),
             "dropped_details": dropped_entries,
@@ -192,9 +189,12 @@ def run_digest(
             "degraded": degraded,
             "git_committed": False,
         }
-        daily_text = report.render_daily(summary)
-
         state_dir = get_instance_state_dir(inst_cfg.name)
+        accumulated = update_daily_state(
+            state_dir, summary, dry_run=dry_run, is_mechanical=False
+        )
+        daily_text = report.render_daily(accumulated)
+
         if dry_run:
             dry_hub = state_dir / "dry-run" / as_of_str / "hub"
             keep_items, _ = items.split_archive(all_items, as_of_date)
@@ -206,6 +206,12 @@ def run_digest(
             atomic_write(dry_hub / "today.md", today_text, [state_dir])
             atomic_write(dry_hub / "status.md", status_text, [state_dir])
             atomic_write(dry_hub / "status-index.md", index_text, [state_dir])
+            if archived_status:
+                statusfile.append_status_archive(
+                    dry_hub / "reports" / "status-archive.md",
+                    archived_status,
+                    [state_dir],
+                )
             atomic_write(dry_hub / "reports" / f"daily-{as_of_str}.md", daily_text, [state_dir])
         else:
             vault = inst_cfg.vault
@@ -213,6 +219,12 @@ def run_digest(
             atomic_write(vault / "hub" / "today.md", today_text, [vault])
             atomic_write(vault / "hub" / "status.md", status_text, [vault])
             atomic_write(vault / "hub" / "status-index.md", index_text, [vault])
+            if archived_status:
+                statusfile.append_status_archive(
+                    vault / "hub" / "reports" / "status-archive.md",
+                    archived_status,
+                    [vault],
+                )
 
             cand_file = vault / "hub" / "reports" / "candidates.md"
             for line in cand_lines:
@@ -223,8 +235,7 @@ def run_digest(
                 append_line(corr_file, line, [vault])
 
             daily_file = vault / "hub" / "reports" / f"daily-{as_of_str}.md"
-            if records or not daily_file.exists():
-                atomic_write(daily_file, daily_text, [vault])
+            atomic_write(daily_file, daily_text, [vault])
 
             rest_id_set = {r.line_id for r in mech.rest}
             if degraded:

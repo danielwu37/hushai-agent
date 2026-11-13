@@ -6,6 +6,7 @@ import configparser
 
 DEFAULT_WINDOW_DAYS = 14
 DEFAULT_STALE_DAYS = 14
+DEFAULT_STATUS_ARCHIVE_DAYS = 28
 DEFAULT_MAX_DAILY_CALLS = 20
 VALID_TIERS = ("light", "heavy")
 
@@ -71,6 +72,7 @@ def _parse_optional_sections(
     int,
     int,
     int,
+    int,
 ]:
     """解析 M2 新增可选配置节 [adapters]、[jobs]、[budget]。"""
     adapters: dict[str, dict[str, str]] = {}
@@ -89,13 +91,16 @@ def _parse_optional_sections(
     jobs: dict[str, list[tuple[str, str]]] = {"digest": [], "weekly": []}
     if parser.has_section("jobs"):
         for opt, raw_val in parser.items("jobs"):
-            if opt in ("window_days", "stale_days"):
+            if opt in ("window_days", "stale_days", "status_archive_days"):
                 continue
             jobs[opt.strip()] = parse_fallback_chain(raw_val)
 
     window_days = _parse_int_option(parser, "jobs", "window_days", DEFAULT_WINDOW_DAYS)
     stale_days = _parse_int_option(parser, "jobs", "stale_days", DEFAULT_STALE_DAYS)
+    status_archive_days = _parse_int_option(
+        parser, "jobs", "status_archive_days", DEFAULT_STATUS_ARCHIVE_DAYS
+    )
     max_daily_calls = _parse_int_option(
         parser, "budget", "max_daily_calls", DEFAULT_MAX_DAILY_CALLS, allow_zero=True
     )
-    return adapters, jobs, window_days, stale_days, max_daily_calls
+    return adapters, jobs, window_days, stale_days, status_archive_days, max_daily_calls

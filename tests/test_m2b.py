@@ -1,4 +1,4 @@
-"""M2b 汇总主流程、七天回放、晚到行、重复跑、降级、回退与预算单元测试（第 1-6 项，并导入第 7-13 项）。"""
+"""M2b 汇总主流程、七天回放、晚到行、重复跑、降级、回退与预算单元测试（第 1-6 项）。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from hushai_agent.inboxscan import iter_inbox_lines  # noqa: E402
 from hushai_agent.todaysel import parse_today_entries  # noqa: E402
 from hushai_agent.validate import validate_vault  # noqa: E402
 from hushai_agent.vault import init_instance  # noqa: E402
-from test_m2b_extra import TestM2bExtra  # noqa: E402,F401
 
 DEMO_VAULT_SRC = REPO_ROOT / "examples" / "vault-demo"
 DEMO_FIXTURES_SRC = REPO_ROOT / "examples" / "fixtures-demo"
@@ -142,7 +141,8 @@ class TestM2bCore(unittest.TestCase):
         # 放弃的事（模型 dropped 与机械 放弃）不再开放
         self.assertEqual(final_items["260304-1"].status, "dropped")
         self.assertEqual(final_items["260303-2"].status, "dropped")
-        # 机械完成的物业费已办
+        # 机械完成的预置水费与物业费均已办
+        self.assertEqual(final_items["260301-1"].status, "done")
         self.assertEqual(final_items["260303-1"].status, "done")
 
         # 候选记忆进了 reports/candidates.md 而 profile.md 一字未改

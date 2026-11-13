@@ -77,11 +77,13 @@ hushAi-agent 是一个以本地 Markdown 为唯一记忆、由常驻服务器管
 | `放弃 <编号>` / `drop <id>` | 开放项关闭，标记为放弃 |
 | `更正 <编号或 line_id>：<内容>` / `correct …` | 记入更正清单，原行作废 |
 
-开放项编号格式 `YYMMDD-N`（建立日期加当天序号），由代码分配，永不复用。`hushai todo done|defer|drop` 和待办页面的三个按钮写出的就是这些行。
+开放项编号格式 `YYMMDD-N`（建立日期加当天序号），由代码分配，永不复用。`hushai todo done|defer|drop`（`defer` 的 `--to` 可选，默认今天加 7 天，支持 `+Nd`）和待办页面的三个按钮写出的就是这些行。每次推迟累加 `defers=N`，`defers >= 3` 时 `today.md` 提示「建议放弃」。
+
+**即时机械对账（`digest.run_mechanical_only` / `hushai reconcile`）**：`todo` 动作或写入机械动作/保留领域的 `inbox add` 后立即调用一次，不调模型、不占预算，处理机械动作、候选记忆与更正，原地刷新 `today.md` 四种状态（`[ ]`、`[x]`、`[-]`、`[>]`），推进游标并更新当日累积日报。
 
 ### 5.3 判断（唯一调模型的一步）
 
-输入：本轮新行（带 `line_id`）、当前开放项表。要求模型只输出下面结构的 JSON，不做「进不进今日待办」的取舍：
+输入：本轮新行（带 `line_id`）、对账前开放的全部开放项（本轮被机械关闭的在 owner 后标 `closed-this-round`，模型对相关新记录用 `ref` 指向它，代码只合并 `src` 不改状态，并记入日报「已关闭的事项又有新记录」）。要求模型只输出下面结构的 JSON，不做「进不进今日待办」的取舍：
 
 ```json
 {
@@ -117,16 +119,17 @@ hushAi-agent 是一个以本地 Markdown 为唯一记忆、由常驻服务器管
 
 ### 5.5 写入
 
-- **今日待办由代码算，不由模型定**：取 `status == open` 且 `owner ∈ {user, user_decision}` 且（`scheduled_date` 为空或不晚于明天）的开放项，按「逾期 → 今天到期 → 无日期」排序，截取 `today_items` 条（默认 7）。
+- **今日待办由代码算，不由模型定**：取 `status == open` 且 `owner ∈ {user, user_decision}` 且（`scheduled_date` 为空或不晚于目标日 `--for-date`，默认基准日加一天）的开放项，按「逾期 → 今天到期 → 未来截止 → 无日期」排序，截取 `today_items` 条（默认 7）。
+- **同日累积日报**：`<状态>/daily/<日期>.json` 累积当天每次运行的事实，每次重绘 `reports/daily-<日期>.md`（演练模式不写累积文件）。
 - 派生文件每行带来源 `line_id` 和核实日期；超过 `stale_days`（默认 14）没有新来源的行，自动加「状态未核实」。
-- `status-index.md` 由 `status.md` 机械生成。
+- `status-index.md` 由 `status.md` 机械生成；若索引行数将超过 `status_index_lines`，按 `verified` 从旧到新归档至 `reports/status-archive.md` 直到不超。
 - 全部用 `fsio.atomic_write`；写完后把本轮 `line_id` 追加进 `digested.jsonl`，再在 vault 的本地 git 提交一次。任一步失败则不推进游标，下一轮重来。
 
 关于「两家模型答案不一样」：把取舍下沉到代码后，分歧只剩在字段提取上（比如排期日抽没抽对）。这部分仍需要一组人工核对过的样例，作为回归测试的基准（第 12 节）。
 
 ### 5.6 每周
 
-重写 `status.md`、`insights.md`；列出过期、已办未销、互相矛盾三张清单放进周报。同样走 5.3 至 5.5。
+收集含基准日共 7 天的收件；将超过 `status_archive_days`（默认 28）的近况归档至 `reports/status-archive.md` 并更新索引；重写 `insights.md`（旧版归档至 `insights-archive/insights-<日期>.md`，同日重跑不覆盖已有归档，保留最近 4 份）；列出逾期、已办未销、互相矛盾、状态未核实四张清单放进周报。
 
 ## 6. 适配层
 
@@ -247,7 +250,7 @@ Result = {ok, data（结构化结果）, text, usage, model, duration, error}
 | 命令 | 里程碑 |
 | --- | --- |
 | `init`、`doctor`、`validate`、`inbox add`、`version` | M1（已有） |
-| `digest [--dry-run] [--date]`、`today`、`todo done\|defer\|drop`、`report daily\|weekly`、`ledger` | M2 |
+| `digest [--dry-run] [--date] [--for-date]`、`reconcile`、`today`、`todo done\|defer\|drop`、`weekly`、`ledger` | M2 / M2.1 |
 | `adapter test`、`dispatch`、`serve`、`sync`、`install`（向导，生成服务单元） | M3 |
 | `export`、`uninstall`、`upgrade` | M3 |
 
@@ -270,6 +273,7 @@ digest = agy:light, claude:light
 weekly = agy:heavy, claude:heavy
 window_days = 14
 stale_days = 14
+status_archive_days = 28
 
 [budget]
 max_daily_calls = 20
