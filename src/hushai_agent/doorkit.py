@@ -176,12 +176,14 @@ def run_wizard(
     )
     jobs_block = (
         "[jobs]\n"
-        f"digest = {'agy:light, claude:light' if steward == 'agy' else 'agy:light, claude:light'}\n"
+        "digest = agy:light, claude:light\n"
         "weekly = agy:heavy, claude:heavy\n"
         "dispatch = agy"
     )
     text = text.replace("[adapters]", adapters_block, 1)
     text = text.replace("[jobs]\ndigest =\nweekly =\ndispatch =", jobs_block, 1)
+    if "[steward]" not in text:
+        text = text.rstrip("\n") + f"\n\n[steward]\nbackend = {steward}\n"
     if "[sync]" not in text:
         text = text.rstrip("\n") + f"\n\n[sync]\ntool = rclone\nremote = {remote}\ntimeout = 60\n"
     atomic_write(cfg_file, text, [cfg_dir])

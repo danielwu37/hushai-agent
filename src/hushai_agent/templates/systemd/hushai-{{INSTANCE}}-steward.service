@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=forking
-User=root
+User={{USER}}
 WorkingDirectory={{VAULT}}
-Environment=HOME=/root
+Environment=HOME={{HOME}}
 Environment=LANG=C.UTF-8
 Environment=TZ={{TZ}}
-Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 Environment=HUB_CAPTURE_CHILD=1

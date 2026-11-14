@@ -1,146 +1,164 @@
 # hushAi-agent
 
-`hushAi-agent` 是一个开源标准的个人 AI 记忆与协作框架：以本地 Markdown 文件夹（`vault`）作为唯一记忆底座，各端（`door`）平日只向收件箱（`inbox`）追加记录，服务器上的常驻管家（`steward`）定时将收件对账汇总为派生视图，让不同 AI 工具安全读写同一份个人记忆。
+> **hushAi-agent** 是一个面向个人与轻量 VPS 部署的开源个人 AI 记忆与常驻管家框架，通过以本地纯文本 Markdown 为唯一事实源与厂商中立的双模型流水线，解决跨端对话记忆割裂、AI 厂商锁定及服务运维繁琐的核心痛点。
 
-## 核心概念
+[![GitHub release](https://img.shields.io/github/v/release/danielwu37/hushai-agent?style=flat-square)](https://github.com/danielwu37/hushai-agent/releases)
+[![License](https://img.shields.io/github/license/danielwu37/hushai-agent?style=flat-square)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](./pyproject.toml)
 
-- **vault（记忆库）**：一个使用者的全部数据目录，包含 `hub/`（跨领域核心记忆）与 `domains/`（各领域资料库）。
-- **door（端）**：能读写 vault 的入口，具有唯一编号（如 `steward`、`laptop`、`web`）。其中 `steward` 是服务器上的常驻管家。
-- **inbox（收件）**：位于 `hub/inbox/` 下，每端每天一个文件，严格采用只追加（append-only）方式写入。
-- **instance（实例）**：一个使用者的一整套运行单元（vault + 配置 + 状态），单台主机可承载多个独立实例。
-- **记忆三层**：
-  1. **约定层**（`AGENTS.md`、`AGENTS.local.md`、`profile.md`）：行为规则与个人画像，仅在使用者批准后修改。
-  2. **记录层**（`hub/inbox/`）：日常事实流水，只追加不篡改。
-  3. **派生层**（`status.md`、`status-index.md`、`open-items.md`、`today.md`、`insights.md`、`reports/`）：仅由管家汇总任务生成，是数据而非指令，可由记录层随时重算。
+---
 
-## 5 分钟上手
+## 1. 项目目标 (Why & Goals)
 
-确保运行环境为 Python 3.10 或更高版本（零第三方依赖）。
+在长期使用 AI 助手的个人场景中，传统做法通常面临记忆锁死在单一云厂商、不同设备间状态不同步、模型额度耗尽后对话中断、以及需要频繁手工维护提示词和数据库等痛点。`hushAi-agent` 提供了一套 **纯文本、零外部依赖、低维护成本** 的个人底座方案：
 
-### 1. 初始化实例（init）
+- **核心目标**：实现「多端只追加记录 → 定时/即时机械与模型汇总 → 多入口可读可勾」的个人记忆闭环，让不同 AI 工具安全协作读写同一份属于你自己的记忆库（`vault`）。
+- **适用边界 (In Scope)**：个人服务器（2 GB 内存即可）上的持久化记忆管理、日常待办筛选与晨间简报、多 AI CLI 切换与额度兜底、SSH 受控多端读写与静默自愈。
+- **非目标 (Non-Goals)**：本项目不自建重型数据库/向量库/消息队列，不替代上游 AI CLI 本身的客户端界面，也不绑定特定云端域名或公网反代方案。
 
-```bash
-hushai init --instance demo --vault /path/to/my-vault
+---
+
+## 2. 核心功能 (Features)
+
+- **记忆三层与对账闭环**：严格区分「约定层（画像与规则）」「记录层（各端只追加收件）」与「派生层（开放项、近况、今日待办、洞察与日报）」；确定性操作（完成/推迟/放弃/更正）毫秒级纯代码落盘，派生视图可随时由记录层重算。
+- **多 AI 引擎与常驻管家切换**：内置 `claude` 与 `agy`（Antigravity CLI）适配及 `fake` 离线测试桩，后台流水线支持 `light`/`heavy` 回退链与每日预算护栏；常驻 `tmux` 管家支持一条命令在模型间切换，检测到 Claude 额度耗尽时自动由 `agy` 接手并置顶提醒。
+- **多端受控接入与简报界面**：提供只读与受限写入的 SSH 强制命令闸门（含透明路径兼容）、事件驱动跨端只读路由、单屏晨间简报（Markdown / HTML）以及仅监听本机回环、凭令牌认证的可点选待办网页。
+- **静默自愈与极简生命周期**：内置 8 项定时自愈巡检（磁盘、挂载探针、监听单元、定时补跑、管家在线与额度接手），所有系统日志只写运行账本不污染人类视图；支持一键安装向导、完整导出打包与无损模板升级。
+
+---
+
+## 3. 实现路径与架构 (How It Works)
+
+### 核心数据流
+
+```mermaid
+flowchart LR
+    A[多端入口<br/>CLI / SSH 闸门 / Web / 对话钩子] -->|只追加| B[记录层 hub/inbox]
+    B -->|inotify / 即时调用| C{核心流水线<br/>机械对账 + 校验}
+    C -->|确定性动作| D[派生视图<br/>today / open-items / brief]
+    C -->|每日汇总 / 每周重写| E[模型适配链<br/>agy / claude 回退]
+    E -->|Strict JSON| D
+    F[静默自愈 heal & 管家守护] -->|巡检/额度接手| E
 ```
 
-该命令会从内置模板生成完整 vault 目录结构、写入实例配置、创建状态目录，并在系统安装了 `git` 时自动初始化版本库。重复执行具备幂等性，只补齐缺失文件而不覆盖已有文件（若在已有提交的 Git 仓库中补回了缺失文件，会自动提交本次补齐的文件）。指定 `--lang en` 时，生成的实例配置默认领域为英文（`work,family,life,study,health`），但内置 vault 模板文件正文目前只有中文。
+1. **只追加采集**：手机、桌面或常驻管家会话结束时，经路径护栏或 SSH 闸门将五段式事实行追加到当天的收件文件（`hub/inbox/YYYY-MM-DD-<端>.md`）。
+2. **机械优先对账**：收件落盘后立即触发轻量事件处理，优先用纯代码消化办完、推迟、放弃、决定、教训与候选记忆，不消耗模型额度。
+3. **有限模型判断与落盘**：每日定时任务在隔离空目录下调用无工具问答模型提取新增事项与近况，经代码严格校验字段与 `line_id` 后原子覆写派生文件并本地 Git 提交。
 
-### 2. 实例体检（doctor）
+### 技术栈与选型理由
 
-```bash
-hushai doctor --instance demo
-# 或输出 JSON 格式：
-hushai doctor --instance demo --json
-```
+| 组件 | 选型 | 理由 |
+| :--- | :--- | :--- |
+| 运行时与依赖 | **Python 3.10+（纯标准库）** | 零第三方包依赖，避免版本冲突与漫长构建，极简 VPS 开箱即跑 |
+| 存储格式 | **Markdown + JSONL + 本地 Git** | 人类可读、不锁厂商、可审计可回滚，无需维护数据库守护进程 |
+| 调度与常驻 | **systemd + tmux** | 系统原生生命周期管理与断线重连，进程峰值 1 GB 内存以内即可稳定运行 |
+| 远端同步 | **rclone copy（非挂载点）** | 按文件归属单向同步，规避网盘 FUSE 挂载卡死拖垮整机进程 |
 
-逐项检查配置文件、目录结构、文件行数上限、收件格式、同步冲突副本、状态目录权限、Git 状态与隐私目录。
-
-### 3. 追加收件（inbox add）
-
-```bash
-hushai inbox add \
-  --instance demo \
-  --door laptop \
-  --domain 工作 \
-  --did "完成第三章译稿初校" \
-  --artifact "domains/work/ch3.md" \
-  --todo "周五前复核专有名词表"
-```
-
-向实例当天对应端的收件文件安全追加一条标准格式记录。
-
-### 4. 校验任意记忆库（validate）
-
-```bash
-hushai validate /path/to/my-vault
-# 或校验仓库自带的虚构示例库：
-hushai validate examples/vault-demo
-```
-
-无需实例配置即可按规范校验任意 vault 的结构、收件文件名、收件行格式与同步冲突文件。
-
-### 5. 闭环汇总、自检与派活（M2 / M3a）
-
-- `hushai digest --instance demo`：每日收集收件、机械对账、模型判断、更新派生视图与提交 Git。
-- `hushai reconcile --instance demo`：立即执行一次纯机械对账（不调用模型）。
-- `hushai weekly --instance demo`：每周近况归档、洞察重写与周报审计。
-- `hushai today --instance demo` / `hushai todo done|defer|drop TARGET --instance demo`：查看与回写今日待办。
-- `hushai adapter test NAME --instance demo`：用极小提示词与结构自检问答式适配项（`claude` / `agy` / `fake`）。
-- `hushai dispatch --instance demo --name JOB (--task FILE | --goal "目标")`：在隔离工作目录派发独立代理任务并落盘记账。
-
-### 6. 各端接入、即时对账与跨端留言（M3b）
-
-- `hushai gate append-inbox|put-exchange|check-inbox|ssh --instance demo --door laptop`：各端写入 vault 的唯一受控入口，输出 JSON；接法见 `docs/doors.md`。
-- `hushai on-event --instance demo`：收件有变化时跑一遍，先即时机械对账（不调模型），再做跨端路由。
-- 跨端路由：收件行「待办」以 `@steward`、`@agy` 等开头时，由一个**只出文字、没有工具**的模型作答，回复放 `hub/exchange/out/to-<来源端>/`。默认关闭，只认 `[routing] trusted_doors` 里的端，每天有次数上限。
-- `hushai install units --instance demo --out DIR`：生成 systemd 单元模板（目录监听、每日、每周、待办页面）。只生成文件，不安装、不启用。
-
-### 7. 晨间简报与待办页面（M3c）
-
-- `hushai brief --instance demo [--md|--html|--json]`：把「要我办、要我定、候选记忆、疑似已办」收在一屏。每次汇总和即时对账后自动重写 `hub/reports/morning-brief.md` 与 `.html`（只读快照）。
-- `hushai serve --instance demo [--port 8765]`：可点选的简报页面，只监听 `127.0.0.1`，凭令牌进入；每次点选写一条标准收件行并立即对账。
-- `hushai candidate list|approve|discard`：候选记忆有编号（`C-YYMMDD-N`），批准后原文追加到 `profile.md` 或 `AGENTS.local.md`；只有 `[approval] doors` 里的端能批。
-- `hushai todo accept TARGET`：等我拍板的事带推荐时，一步按推荐确认。
-
-### 8. 安装向导、端接入包、同步与生命周期管理（M3d）
-
-- `hushai install wizard --instance demo --vault /path/to/vault`：一站式初始化、写入双适配项与回退链配置、生成 systemd 单元与端接入包并执行体检。
-- `hushai install doorkit --instance demo --out DIR`：生成 `claude`（采用 `--setting-sources project,local --settings` 同账号零冲突隔离）与 `agy` 的端接入配置和启动脚本。
-- `hushai sync --instance demo [--direction push|pull|both] [--dry-run]`：按文件归属调 `rclone copy` 单向同步（不碰挂载点），拉取后立即触发事件对账。
-- `hushai export` / `hushai upgrade` / `hushai uninstall`：完整导出备份（排除令牌凭据与 `.git`）、更新框架托管模板、安全卸载实例。
-- 两本手册：`docs/user-guide.md`（《使用者手册》）与 `docs/admin-guide.md`（《安装与维护手册》）。
-
-## 仓库目录说明
+### 目录结构（顶层职责）
 
 ```text
-pyproject.toml            包配置与命令行入口定义
-LICENSE                   MIT 开源许可证
-README.md                 项目简介与快速上手
-docs/spec.md              hushAi-agent 核心规范文档
-docs/design.md            hushAi-agent 架构设计文档
-docs/doors.md             各端接入说明（闸门、强制命令、回写写法）
-docs/user-guide.md        日常使用者手册
-docs/admin-guide.md       安装与维护手册
-src/hushai_agent/         核心源码包（标准库实现）
-  cli.py                  命令行参数解析与主分发
-  cli_loop.py             M2 闭环子命令（today/todo/ledger/digest/weekly/reconcile）
-  cli_m3.py               M3 子命令（adapter test / dispatch）
-  cli_m3b.py              M3b 子命令（gate / on-event / install units|doorkit|wizard）
-  cli_m3c.py              M3c 子命令（candidate / brief / serve）
-  cli_m3d.py              M3d 子命令（sync / export / upgrade / uninstall）
-  config_ext.py           M3 可选配置节（gate / routing / approval / sync / candidates_pending）
-  config.py               实例配置读写与校验
-  config_loop.py          回退链、适配项、预算与调度配置解析
-  paths.py                配置根、状态根与模板路径解析
-  guard.py                读写路径护栏（防目录穿越、外部符号链接与 local_only）
-  fsio.py                 原子覆写、O_APPEND 整行追加与提示词安全读取
-  inboxfmt.py             收件文件名与收件行解析、格式化与校验
-  inboxscan.py            收件行确定性 line_id 与目录有序遍历
-  vault.py                记忆库初始化与收件追加逻辑
-  validate.py             无配置记忆库规范校验
-  doctor.py               实例全量体检（含运行态 ledger-recent / inbox-backlog）
-  daily_state.py          同日累积日报状态读写与合并
-  reconcile.py            即时纯机械对账（run_mechanical_only）
-  digest.py               每日汇总主流程
-  weekly.py               每周洞察重写与审计周报
-  adapter_cmd.py          适配项自检命令逻辑
-  dispatch.py             代理式派活与中断续跑逻辑
-  gate.py                 闸门：各端写收件、放交换区、查待收
-  on_event.py             事件处理：即时机械对账加跨端路由
-  routing.py              跨端路由（只用问答式）
-  install.py              服务单元模板渲染
-  doorkit.py              端接入包生成与一站式安装向导
-  sync.py                 按文件归属单向同步（rclone copy）
-  lifecycle.py            导出备份、模板升级与实例卸载
-  ppc.py                  更正驱动规则微调（Propose-Probe-Compose）
-  candidates.py           候选记忆：编号、上限、批准、丢弃
-  brief.py / brief_html.py  晨间简报数据、Markdown 与页面
-  serve.py                待办页面（127.0.0.1、令牌、点选回写）
-  adapters/               模型适配层（base / fake / proc / claude / agy）
-  prompts/                内置中文提示词模板（digest / weekly / dispatch-task / route）
-  templates/systemd/      服务单元模板
-  templates/vault/        初始化默认模板（内置模板正文目前只有中文）
-examples/vault-demo/      虚构示例记忆库（自由译者「林晓」）
-tools/privacy_scan.py     个人隐私信息正则扫描工具
-tests/                    单元测试套件
+.
+├── bin/                   # 免 pip 直启命令行包装与 SSH 强制命令隔离入口
+├── docs/                  # 架构规范、多端接入协议、使用者与管理员手册
+├── examples/              # 虚构示例记忆库（可直接用于本地验证与体验）
+├── src/hushai_agent/      # 核心包：CLI、记忆库引擎、适配层、闸门、自愈与模板
+├── tests/                 # 离线自动化单元测试套件（基于 fake 适配器）
+├── tools/                 # 隐私扫描等辅助研发工具
+├── pyproject.toml         # 标准 Python 包元数据与命令入口定义
+└── CHANGELOG.md           # 版本变更记录
 ```
+
+---
+
+## 4. 快速上手 (Quick Start)
+
+**前置依赖**：`Ubuntu 22.04+ / Debian 12+ / Linux VPS`（内存建议 ≥ 2 GB）、`Python 3.10+`、`git`、`tmux`、`systemd`，以及至少一个已登录认证的终端 AI 工具（用于后台汇总或常驻管家）。
+
+### 方式一：AI 命令行一键自动安装（推荐）
+
+如果你已在 VPS 终端装好任意编程 Agent CLI（如 **Claude Code**、**Codex**、**DeepSeek CLI**、**Antigravity (`agy`)**、**Gemini CLI** 等），直接进入会话发送下面这段话，即可让 AI 全自动完成下载、配置、服务注册与体检：
+
+```text
+请帮我把 https://github.com/danielwu37/hushai-agent.git 自动安装并部署到当前这台 VPS 上，要求如下：
+1. 检查当前系统（Python 3.10+、git、tmux、systemd）以及本机已安装并登录的 AI CLI（claude / agy 等）。
+2. 将仓库克隆到 ~/hushai-agent（若已存在则拉取最新代码）。
+3. 优先尝试在独立 venv 安装或将 ~/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai（确保 PATH 可直接执行 hushai，不要破坏系统全局 Python 环境）。
+4. 使用当前机器时区、我的实际目录 ~/hushai-vault，运行 `hushai install wizard --instance my --vault ~/hushai-vault` 完成实例初始化、单元生成与端接入包渲染（根据本机实际可用的 AI CLI 自动调整 [steward] 与 [adapters]）。
+5. 核对并安装启用 ~/.config/hushai/my/units/ 下的 systemd 单元（daemon-reload 并 enable --now watch.path、heal.timer、digest.timer、weekly.timer、steward.service）。
+6. 运行 `hushai validate ~/hushai-vault`、`hushai doctor --instance my` 与 `hushai steward status --instance my`，只把真实执行的命令输出和最终使用入口汇报给我。
+```
+
+### 方式二：手动三步部署到 VPS
+
+```bash
+# 1. 克隆仓库并配置免依赖命令行入口（也可用 venv + pip install --no-build-isolation --no-deps -e .）
+git clone https://github.com/danielwu37/hushai-agent.git ~/hushai-agent
+mkdir -p ~/.local/bin && ln -sf ~/hushai-agent/bin/hushai ~/.local/bin/hushai
+hushai version
+
+# 2. 一站式向导初始化实例、记忆库与 systemd 单元（默认在 ~/hushai-vault）
+hushai install wizard --instance my --vault ~/hushai-vault --timezone Asia/Shanghai --lang zh --steward agy
+
+# 3. 验证通过后，按向导输出启用 systemd 后台服务
+sudo cp ~/.config/hushai/my/units/hushai-my-*.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hushai-my-watch.path hushai-my-heal.timer hushai-my-digest.timer hushai-my-weekly.timer hushai-my-steward.service
+```
+
+> **仅本地零配置体验示例库**：`hushai validate ~/hushai-agent/examples/vault-demo`；运行离线全量单测：`PYTHONPATH=~/hushai-agent/src python3 -m unittest discover -s ~/hushai-agent/tests`。
+
+---
+
+## 5. 核心配置与日常使用 (Configuration & Usage)
+
+### 核心配置契约
+
+所有实例运行参数统一存储在 `~/.config/hushai/<实例名>/config.ini`（可用 `hushai --help` 查看全部子命令）。以下仅列出最关键的 5 个配置项：
+
+| 配置节与键 | 必填 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `[instance] vault` | 是 | 无 | 记忆库绝对路径（必须在本地磁盘，勿放网盘挂载点） |
+| `[instance] timezone` | 是 | `Asia/Shanghai` | 实例所属 IANA 时区，决定每日汇总与收件归档日期 |
+| `[steward] backend` | 否 | `agy` | 常驻管家使用的模型后端（`claude` 或 `agy`） |
+| `[jobs] digest` / `weekly` | 否 | `agy:light, claude:light` | 任务模型与自动回退链 |
+| `[privacy] local_only` | 否 | `domains/health` | 永不出本机的目录，同步与模型提示词硬性跳过 |
+
+### 典型日常用法
+
+```bash
+# 查看或一条命令切换常驻管家模型（claude / agy）
+hushai steward status --instance my
+hushai steward use claude --instance my
+
+# 查看今日待办 / 生成并查看晨间简报 / 启动本机待办点选页面（127.0.0.1:8765）
+hushai today --instance my
+hushai brief --instance my --md
+hushai serve --instance my --port 8765
+```
+
+- 日常对话与网页操作说明：[使用者手册](./docs/user-guide.md)
+- 多实例隔离、反向代理、同步与自愈运维：[安装与维护手册](./docs/admin-guide.md)
+- 多端接入与 SSH 文本闸门协议：[多端接入指南](./docs/doors.md)
+- 系统设计规范与原理：[架构设计文档](./docs/design.md)
+
+---
+
+## 6. 功能更新与演进路线 (Roadmap & Updates)
+
+### 演进路线 (Roadmap)
+- [x] **Phase 1 — 核心记忆引擎**：纯文本规范、路径护栏、机械与模型双阶段汇总、7 天离线回放验证
+- [x] **Phase 2 — 多端闭环与运维自愈**：SSH 闸门、跨端路由、晨间简报、一键安装向导与 8 项静默自愈（含额度接手）
+- [ ] **Phase 3 — 生态扩展**：更多内置模型 CLI 适配模板与开箱即用的轻量端同步方案
+
+### 功能更新记录 (Changelog)
+本项目的版本迭代、功能新增与修复记录均随发布自动聚合，不在 README 中手工堆砌：
+- 查看每个版本的详细发布说明：[GitHub Releases](https://github.com/danielwu37/hushai-agent/releases)
+- 查看历史变更摘要：[CHANGELOG.md](./CHANGELOG.md)
+
+---
+
+## 7. 贡献与开源协议 (Contributing & License)
+
+欢迎提交 Issue 或 Pull Request！提交代码前请先在本地跑通 `unittest`，并遵循 `feat:` / `fix:` / `docs:` 语义化提交规范，以便配合 GitHub Releases 自动生成更新说明。
+
+本项目基于 [MIT License](./LICENSE) 开源。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import importlib.util
 import re
 import shutil
@@ -66,6 +67,8 @@ def render_units(
         "{{HUSHAI}}": _hushai_command(),
         "{{VAULT}}": str(cfg.vault),
         "{{TZ}}": cfg.timezone,
+        "{{USER}}": getpass.getuser(),
+        "{{HOME}}": str(Path.home()),
         "{{MEMORY_MAX}}": memory_max,
         "{{DIGEST_TIME}}": digest_time,
         "{{WEEKLY_TIME}}": _weekly_time(digest_time),

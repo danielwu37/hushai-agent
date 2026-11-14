@@ -3,6 +3,9 @@ Description=hushAi-agent {{INSTANCE}}: daily digest
 
 [Service]
 Type=oneshot
+User={{USER}}
+Environment=HOME={{HOME}}
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 ExecStartPre=-{{HUSHAI}} heal --instance {{INSTANCE}} --before digest
