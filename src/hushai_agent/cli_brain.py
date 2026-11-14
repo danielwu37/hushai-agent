@@ -135,37 +135,20 @@ def dispatch_brain_command(args: argparse.Namespace) -> int | None:
         return 0
 
     if sub == "status":
-        bcfg = brain_cfg.load_brain_config(cfg)
-        state = brain_cfg.load_brain_state(cfg)
-        link_info = brain_model.check_brain_links(cfg, min_links=bcfg.min_links)
-        hub_dir = cfg.vault / "hub"
-        counts = {
-            d: len([p for p in (hub_dir / d).glob("*.md") if p.is_file()]) if (hub_dir / d).is_dir() else 0
-            for d in brain_model.BRAIN_SUBDIRS
-        }
-        res = {
-            "instance": cfg.name,
-            "onboarded": bool(state.get("onboarded")),
-            "routines": {
-                "enabled": bcfg.enabled,
-                "daily": bcfg.daily_enabled,
-                "weekly": bcfg.weekly_enabled,
-                "resurface": bcfg.resurface_enabled,
-                "monthly": bcfg.monthly_enabled,
-            },
-            "counts": counts,
-            "broken_links": len(link_info["broken_links"]),
-            "underlinked_notes": len(link_info["underlinked_notes"]),
-        }
+        res = brain_routines.get_brain_status(cfg)
+        rt = res["routines"]
         if args.show_brain:
             res["heres_your_brain"] = brain_onboard.render_heres_your_brain(cfg)
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
             print(f"实例: {cfg.name} | 已引导: {res['onboarded']}")
-            print(f"Routines: daily={bcfg.daily_enabled}, weekly={bcfg.weekly_enabled}, resurface={bcfg.resurface_enabled}, monthly={bcfg.monthly_enabled}")
-            print(f"笔记统计: {counts}")
-            print(f"断链: {res['broken_links']} | 少于 {bcfg.min_links} 链的笔记: {res['underlinked_notes']}")
+            print(
+                f"Routines: daily={rt['daily']}, weekly={rt['weekly']}, "
+                f"resurface={rt['resurface']}, monthly={rt['monthly']}"
+            )
+            print(f"笔记统计: {res['counts']}")
+            print(f"断链: {res['broken_links']} | 少于 {res['min_links']} 链的笔记: {res['underlinked_notes']}")
             if args.show_brain:
                 print()
                 print(res["heres_your_brain"])

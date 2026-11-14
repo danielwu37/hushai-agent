@@ -12,6 +12,7 @@ from hushai_agent import clock, items, ledger
 from hushai_agent.brain_ask import _detect_disagreements, _extract_best_quote
 from hushai_agent.brain_cfg import load_brain_config, load_brain_state, save_brain_state
 from hushai_agent.brain_model import (
+    BRAIN_SUBDIRS,
     IndexEntry,
     check_brain_links,
     extract_md_links,
@@ -567,4 +568,31 @@ def run_monthly_maintenance(
         "index_added": added_idx,
         "changes": changes,
         "output_text": report_text,
+    }
+
+
+def get_brain_status(cfg: InstanceConfig) -> dict[str, Any]:
+    """汇总当前实例 second-brain 的引导状态、routine 开关、笔记数量与链接健康。"""
+    bcfg = load_brain_config(cfg)
+    state = load_brain_state(cfg)
+    link_info = check_brain_links(cfg, min_links=bcfg.min_links)
+    hub_dir = cfg.vault / "hub"
+    counts = {
+        d: len([p for p in (hub_dir / d).glob("*.md") if p.is_file()]) if (hub_dir / d).is_dir() else 0
+        for d in BRAIN_SUBDIRS
+    }
+    return {
+        "instance": cfg.name,
+        "onboarded": bool(state.get("onboarded")),
+        "min_links": bcfg.min_links,
+        "routines": {
+            "enabled": bcfg.enabled,
+            "daily": bcfg.daily_enabled,
+            "weekly": bcfg.weekly_enabled,
+            "resurface": bcfg.resurface_enabled,
+            "monthly": bcfg.monthly_enabled,
+        },
+        "counts": counts,
+        "broken_links": len(link_info["broken_links"]),
+        "underlinked_notes": len(link_info["underlinked_notes"]),
     }

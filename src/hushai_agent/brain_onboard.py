@@ -108,7 +108,7 @@ def run_onboard(
     for key, question in ONBOARD_QUESTIONS:
         if key in provided and sanitize_single_line(provided[key]):
             collected[key] = sanitize_single_line(provided[key])
-        elif interactive and sys.stdin.isatty():
+        elif interactive and (prompt_fn is not None or sys.stdin.isatty()):
             collected[key] = sanitize_single_line(ask_fn(question), "未填写")
         else:
             collected[key] = sanitize_single_line(provided.get(key, ""), "未填写")

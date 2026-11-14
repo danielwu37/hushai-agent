@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from hushai_agent.config import ConfigError, InstanceConfig
+from hushai_agent.config_edit import update_ini_text
 from hushai_agent.fsio import atomic_write
 from hushai_agent.paths import get_instance_config_dir, get_instance_config_file, get_instance_state_dir
 
@@ -126,48 +127,7 @@ def load_brain_config(cfg: InstanceConfig) -> BrainConfig:
 
 def _update_ini_section(raw_text: str, section: str, updates: dict[str, str]) -> str:
     """在尽量保留原有注释和格式的前提下，原子更新 INI 指定节的键值。"""
-    lines = raw_text.splitlines()
-    out: list[str] = []
-    in_sec = False
-    sec_found = False
-    seen_keys: set[str] = set()
-    header_line = f"[{section}]"
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            if in_sec:
-                for k, v in updates.items():
-                    if k not in seen_keys:
-                        out.append(f"{k} = {v}")
-                in_sec = False
-            if stripped == header_line:
-                in_sec = True
-                sec_found = True
-            out.append(line)
-            continue
-
-        if in_sec and "=" in line and not stripped.startswith(("#", ";")):
-            k = line.split("=", 1)[0].strip()
-            if k in updates:
-                out.append(f"{k} = {updates[k]}")
-                seen_keys.add(k)
-                continue
-        out.append(line)
-
-    if in_sec:
-        for k, v in updates.items():
-            if k not in seen_keys:
-                out.append(f"{k} = {v}")
-
-    if not sec_found:
-        if out and out[-1].strip():
-            out.append("")
-        out.append(header_line)
-        for k, v in updates.items():
-            out.append(f"{k} = {v}")
-
-    return "\n".join(out) + "\n"
+    return update_ini_text(raw_text, {section: dict(updates)})
 
 
 def set_brain_routine_enabled(cfg: InstanceConfig, target: str, enabled: bool) -> BrainConfig:
