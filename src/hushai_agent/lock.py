@@ -28,11 +28,11 @@ def _resolve_state_dir(cfg: InstanceConfig | str | Path) -> Path:
 
 
 @contextmanager
-def runner_lock(cfg: InstanceConfig | str | Path) -> Iterator[Path]:
-    """对 <状态目录>/runner.lock 获取非阻塞排他锁；失败抛出 LockBusy。"""
+def runner_lock(cfg: InstanceConfig | str | Path, name: str = "runner.lock") -> Iterator[Path]:
+    """对 <状态目录>/<name>（默认 runner.lock）获取非阻塞排他锁；失败抛出 LockBusy。"""
     state_dir = _resolve_state_dir(cfg)
     ensure_dir(state_dir, [state_dir])
-    lock_file = ensure_writable(state_dir / "runner.lock", [state_dir])
+    lock_file = ensure_writable(state_dir / name, [state_dir])
 
     fd = os.open(os.fspath(lock_file), os.O_CREAT | os.O_RDWR, 0o644)
     try:

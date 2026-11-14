@@ -280,3 +280,75 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 11. `inbox-backlog`：存在文件日期早于今天减 2 天（按 `clock`）、且不在游标 `digested.jsonl` 中的合法收件行时报 `WARN` 并列出条数。
 
 `validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`sync-conflicts`。
+
+## 7. M3 新增规范
+
+### 7.1 候选记忆（`hub/reports/candidates.md`）
+
+```text
+- [ ] C-260305-1｜inbox｜交稿前习惯先朗读一遍对话｜added=2026-03-05｜src=L-…
+- [x] C-260305-2｜convention｜……｜added=2026-03-05｜to=profile｜closed=2026-03-06｜src=…
+- [-] C-260306-1｜insight｜……｜added=2026-03-06｜closed=2026-03-07｜src=…
+```
+
+`[ ]` 待批、`[x]` 已批准（`to=profile` 或 `to=rules`）、`[-]` 已丢弃。编号 `C-YYMMDD-N` 不复用。旧格式行（`- 日期｜kind｜文本｜src=…`）读入时自动转成待批并补编号。待批数达到 `[limits] candidates_pending`（默认 20）后，模型给出的新候选不再加入，使用者自己写的照常加入。
+
+批准把候选**原文**追加到 `hub/profile.md` 的 `## 已批准的记忆` 或 `hub/AGENTS.local.md` 的 `## 已批准的补充规则` 小节：`- <文本>（<日期> 批准，C-…）`。只有 `[approval] doors`（缺省：管家端加 `web`）里的端写的批准、丢弃行才生效。
+
+### 7.2 机械动作补充
+
+`批准 C-… 画像|规则`、`丢弃 C-…`；英文 `approve C-… profile|rules`、`discard C-…`。
+
+### 7.3 开放项的推荐字段
+
+开放项行新增可选字段 `rec=…`（位于 `src=` 之前；全角竖线和换行会被替换）。判断步每条 `items` 可带 `recommendation`（字符串或 null），只对 `owner=user_decision` 的项保留；新的非空推荐覆盖旧的。`hushai todo accept` 写出 `完成 <编号>：按推荐，<rec>`。
+
+### 7.4 周报「已办未销」行格式
+
+```text
+- <编号>｜<理由>｜src=<line_id,…>
+```
+
+晨间简报的「疑似已办」取最近一份周报（距今不超过 2 天）里仍然开放的项，再加上已推迟 3 次及以上的开放项，最多 3 条。
+
+### 7.5 M3 配置节（全部可省略）
+
+```ini
+[gate]
+exchange_ext = md,txt,json,csv,html,pdf,png,jpg
+exchange_max_kb = 5120
+
+[routing]
+enabled = false
+trusted_doors =
+max_daily = 10
+steward = claude:heavy, agy:heavy
+agy =
+
+[approval]
+doors = steward,web
+
+[limits]
+candidates_pending = 20
+```
+
+`[routing]` 里除 `enabled`、`trusted_doors`、`max_daily` 外的键都是目标名，值是回退链；值为空表示该目标不接受路由。配置值后面不要写行内注释。
+
+### 7.6 状态目录新增文件
+
+| 文件 | 内容 |
+| --- | --- |
+| `routed.jsonl` | 每次路由一行：`line_id`、`target`、`result`（ok / failed）、`tries`、`ts` |
+| `gate/<端>.seen.json` | 该端已确认收到的交换区文件 |
+| `serve.log` | 待办页面访问日志（方法、路径、状态码；不含令牌） |
+| `<配置目录>/serve.token` | 待办页面令牌，权限 600 |
+
+### 7.7 待办页面接口
+
+只监听 `127.0.0.1`。`GET /?t=<令牌>` 校验后种 `HttpOnly; SameSite=Strict` 的 cookie；没有有效令牌或 cookie 的任何请求返回 403 且响应体为空。`GET /` 页面，`GET /api/brief` 简报 JSON，`POST /api/act`（须带请求头 `X-Hushai: 1`，请求体不超过 4 KB）：
+
+```json
+{"action": "done|defer|drop|accept|approve|discard|accept_all", "id": "260302-1 或 C-…", "to": "profile|rules"}
+```
+
+成功返回新的简报 JSON（附 `_html`，页面用它局部重画）；参数不合法 400，目标不存在或已处理 409，其他路径 404，其他方法 405。

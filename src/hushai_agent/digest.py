@@ -6,9 +6,10 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    collect, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    brief, candidates, collect, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
+from hushai_agent.config_ext import load_ext
 from hushai_agent.digest_apply import (
     apply_model_output, build_candidate_and_correction_lines, commit_hub_if_git,
 )
@@ -61,6 +62,8 @@ def run_digest(
         status_rows = statusfile.load(inst_cfg)
         records = collect.collect(inst_cfg, as_of_date)
         mech = mechanical.apply_actions(all_items, records)
+        ext = load_ext(inst_cfg)
+        candidates.apply_mech(inst_cfg, mech, ext.approval_doors, write=not dry_run)
 
         by_door: dict[str, int] = {}
         for rec in records:
@@ -125,6 +128,9 @@ def run_digest(
             mech_corrections=mech.corrections,
             model_data=model_data,
         )
+        cand_added, cand_skipped = candidates.add(
+            inst_cfg, cand_lines, len(mech.candidates), as_of_date, ext.candidates_pending, write=not dry_run
+        )
 
         today_selected = todaysel.select_today(all_items, target_for_date, inst_cfg.today_items)
         today_text = todaysel.render_today(today_selected, target_for_date, degraded=degraded)
@@ -160,6 +166,7 @@ def run_digest(
                     "line_id": e.line_id,
                     "did": e.record.did if e.record else "",
                     "raw": e.record.raw if e.record else "",
+                    "reason": e.reason,
                 }
                 for e in mech.unmatched
             ],
@@ -182,7 +189,9 @@ def run_digest(
             "ignored": applied_info["ignored"],
             "dropped": len(dropped_entries),
             "dropped_details": dropped_entries,
-            "candidates_added": len(cand_lines),
+            "candidates_added": cand_added,
+            "candidates_skipped": cand_skipped,
+            "candidates_pending": ext.candidates_pending,
             "corrections_added": len(corr_lines),
             "today_count": len(today_selected),
             "today_items": [{"id": it.id, "title": it.title} for it in today_selected],
@@ -226,10 +235,6 @@ def run_digest(
                     [vault],
                 )
 
-            cand_file = vault / "hub" / "reports" / "candidates.md"
-            for line in cand_lines:
-                append_line(cand_file, line, [vault])
-
             corr_file = vault / "hub" / "reports" / "corrections.md"
             for line in corr_lines:
                 append_line(corr_file, line, [vault])
@@ -245,6 +250,7 @@ def run_digest(
             if advance_ids:
                 cursor.append(inst_cfg, advance_ids, as_of_date)
 
+            brief.refresh(inst_cfg)
             summary["git_committed"] = commit_hub_if_git(vault, f"digest {as_of_str}")
 
         note_parts = []

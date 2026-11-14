@@ -82,12 +82,15 @@ def render_daily(summary: dict[str, Any]) -> str:
         for entry in unmatched:
             raw_text = entry.get("raw") or entry.get("did") or ""
             target_id = entry.get("id") or ""
-            lines.append(f"- 原文：{raw_text}（提示：可能写错了编号 {target_id}，或该项已关闭）")
+            hint = entry.get("reason") or f"可能写错了编号 {target_id}，或该项已关闭"
+            lines.append(f"- 原文：{raw_text}（提示：{hint}）")
 
     lines.extend(["", "## 候选记忆与明日待办"])
     cand_count = int(summary.get("candidates_added", 0))
     today_count = int(summary.get("today_count", 0))
     lines.append(f"- 新增候选记忆：{cand_count} 条")
+    if int(summary.get("candidates_skipped", 0)) > 0:
+        lines.append(f"- 候选记忆待批已满 {summary.get('candidates_pending', 0)} 条，新的没有加入")
     if for_date:
         lines.append(f"- 明日待办（{for_date}）：{today_count} 条")
     else:

@@ -1,0 +1,9 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: weekly timer
+
+[Timer]
+OnCalendar=Sun *-*-* 22:00:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from hushai_agent import (
+    brief,
+    candidates,
     clock,
     collect,
     cursor,
@@ -16,6 +18,7 @@ from hushai_agent import (
     todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
+from hushai_agent.config_ext import load_ext
 from hushai_agent.daily_state import (  # noqa: F401
     load_daily_accumulated,
     merge_daily_facts,
@@ -62,6 +65,8 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
             }
 
         vault = inst_cfg.vault
+        ext = load_ext(inst_cfg)
+        candidates.apply_mech(inst_cfg, mech, ext.approval_doors)
         items.save(inst_cfg, all_items, as_of_date)
 
         cand_lines, corr_lines = build_candidate_and_correction_lines(
@@ -70,9 +75,9 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
             mech_corrections=mech.corrections,
             model_data=None,
         )
-        cand_file = vault / "hub" / "reports" / "candidates.md"
-        for line in cand_lines:
-            append_line(cand_file, line, [vault])
+        cand_added, _ = candidates.add(
+            inst_cfg, cand_lines, len(cand_lines), as_of_date, ext.candidates_pending
+        )
         corr_file = vault / "hub" / "reports" / "corrections.md"
         for line in corr_lines:
             append_line(corr_file, line, [vault])
@@ -129,10 +134,11 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
                     "line_id": e.line_id,
                     "did": e.record.did if e.record else "",
                     "raw": e.record.raw if e.record else "",
+                    "reason": e.reason,
                 }
                 for e in mech.unmatched
             ],
-            "candidates_added": len(cand_lines),
+            "candidates_added": cand_added,
             "corrections_added": len(corr_lines),
             "today_count": open_today_cnt,
             "degraded": None,
@@ -144,6 +150,7 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
         daily_file = vault / "hub" / "reports" / f"daily-{as_of_str}.md"
         atomic_write(daily_file, report.render_daily(accumulated), [vault])
 
+        brief.refresh(inst_cfg)
         git_committed = commit_hub_if_git(
             vault, f"mechanical {as_of_str} {now_dt.strftime('%H:%M')}"
         )
@@ -161,7 +168,7 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
             "processed_lines": len(processed),
             "mechanical_applied": len(mech.applied),
             "unmatched": len(mech.unmatched),
-            "candidates_added": len(cand_lines),
+            "candidates_added": cand_added,
             "corrections_added": len(corr_lines),
             "git_committed": git_committed,
         }

@@ -107,8 +107,8 @@ def run_todo_action(
     to_date: str | None = None,
     door: str | None = None,
 ) -> Path:
-    """将待办回写动作（done / defer / drop）追加为对应端当天的标准收件行并触发即时机械对账。"""
-    if action not in ("done", "defer", "drop"):
+    """将待办回写动作（done / defer / drop / accept）追加为对应端当天的标准收件行并触发即时机械对账。"""
+    if action not in ("done", "defer", "drop", "accept"):
         raise ValueError(f"不支持的待办动作: {action}")
 
     cfg = load_instance_config(instance)
@@ -143,7 +143,16 @@ def run_todo_action(
     if overlaid_state in TERMINAL_STATES:
         raise ValueError(f"开放项 {item_id} 在叠加视图中已处于终态（{overlaid_state}）")
 
-    if cfg.lang == "en":
+    if action == "accept":
+        # 按推荐定：只对带推荐的待定事项可用，写成一条「完成」行
+        if matched.owner != "user_decision" or not matched.rec:
+            raise ValueError(f"开放项 {item_id} 没有推荐，不能按推荐确认")
+        did = (
+            f"done {matched.id}: as recommended, {matched.rec}"
+            if cfg.lang == "en"
+            else f"完成 {matched.id}：按推荐，{matched.rec}"
+        )
+    elif cfg.lang == "en":
         if action == "done":
             did = f"done {matched.id}: {matched.title}"
         elif action == "defer":

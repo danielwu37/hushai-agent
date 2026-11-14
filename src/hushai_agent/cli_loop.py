@@ -22,8 +22,8 @@ def register_loop_commands(subparsers: Any) -> None:
     p_todo = subparsers.add_parser("todo", help="将今日待办的完成、推迟、放弃回写至收件箱")
     p_todo.add_argument(
         "todo_action",
-        choices=("done", "defer", "drop"),
-        help="待办动作：done（完成）、defer（推迟）、drop（放弃）",
+        choices=("done", "defer", "drop", "accept"),
+        help="待办动作：done（完成）、defer（推迟）、drop（放弃）、accept（按推荐定）",
     )
     p_todo.add_argument("target", help="today.md 中的序号 N 或开放项编号 YYMMDD-N")
     p_todo.add_argument("--instance", required=True, help="实例名称")

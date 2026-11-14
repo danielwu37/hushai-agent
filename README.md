@@ -68,6 +68,20 @@ hushai validate examples/vault-demo
 - `hushai adapter test NAME --instance demo`：用极小提示词与结构自检问答式适配项（`claude` / `agy` / `fake`）。
 - `hushai dispatch --instance demo --name JOB (--task FILE | --goal "目标")`：在隔离工作目录派发独立代理任务并落盘记账。
 
+### 6. 各端接入、即时对账与跨端留言（M3b）
+
+- `hushai gate append-inbox|put-exchange|check-inbox|ssh --instance demo --door laptop`：各端写入 vault 的唯一受控入口，输出 JSON；接法见 `docs/doors.md`。
+- `hushai on-event --instance demo`：收件有变化时跑一遍，先即时机械对账（不调模型），再做跨端路由。
+- 跨端路由：收件行「待办」以 `@steward`、`@agy` 等开头时，由一个**只出文字、没有工具**的模型作答，回复放 `hub/exchange/out/to-<来源端>/`。默认关闭，只认 `[routing] trusted_doors` 里的端，每天有次数上限。
+- `hushai install units --instance demo --out DIR`：生成 systemd 单元模板（目录监听、每日、每周、待办页面）。只生成文件，不安装、不启用。
+
+### 7. 晨间简报与待办页面（M3c）
+
+- `hushai brief --instance demo [--md|--html|--json]`：把「要我办、要我定、候选记忆、疑似已办」收在一屏。每次汇总和即时对账后自动重写 `hub/reports/morning-brief.md` 与 `.html`（只读快照）。
+- `hushai serve --instance demo [--port 8765]`：可点选的简报页面，只监听 `127.0.0.1`，凭令牌进入；每次点选写一条标准收件行并立即对账。
+- `hushai candidate list|approve|discard`：候选记忆有编号（`C-YYMMDD-N`），批准后原文追加到 `profile.md` 或 `AGENTS.local.md`；只有 `[approval] doors` 里的端能批。
+- `hushai todo accept TARGET`：等我拍板的事带推荐时，一步按推荐确认。
+
 ## 仓库目录说明
 
 ```text
@@ -76,10 +90,14 @@ LICENSE                   MIT 开源许可证
 README.md                 项目简介与快速上手
 docs/spec.md              hushAi-agent 核心规范文档
 docs/design.md            hushAi-agent 架构设计文档
+docs/doors.md             各端接入说明（闸门、强制命令、回写写法）
 src/hushai_agent/         核心源码包（标准库实现）
   cli.py                  命令行参数解析与主分发
   cli_loop.py             M2 闭环子命令（today/todo/ledger/digest/weekly/reconcile）
   cli_m3.py               M3 子命令（adapter test / dispatch）
+  cli_m3b.py              M3b 子命令（gate / on-event / install units）
+  cli_m3c.py              M3c 子命令（candidate / brief / serve）
+  config_ext.py           M3 可选配置节（gate / routing / approval / candidates_pending）
   config.py               实例配置读写与校验
   config_loop.py          回退链、适配项、预算与调度配置解析
   paths.py                配置根、状态根与模板路径解析
@@ -96,8 +114,16 @@ src/hushai_agent/         核心源码包（标准库实现）
   weekly.py               每周洞察重写与审计周报
   adapter_cmd.py          适配项自检命令逻辑
   dispatch.py             代理式派活与中断续跑逻辑
+  gate.py                 闸门：各端写收件、放交换区、查待收
+  on_event.py             事件处理：即时机械对账加跨端路由
+  routing.py              跨端路由（只用问答式）
+  install.py              服务单元模板渲染
+  candidates.py           候选记忆：编号、上限、批准、丢弃
+  brief.py / brief_html.py  晨间简报数据、Markdown 与页面
+  serve.py                待办页面（127.0.0.1、令牌、点选回写）
   adapters/               模型适配层（base / fake / proc / claude / agy）
-  prompts/                内置中文提示词模板（digest / weekly / dispatch-task）
+  prompts/                内置中文提示词模板（digest / weekly / dispatch-task / route）
+  templates/systemd/      服务单元模板
   templates/vault/        初始化默认模板（内置模板正文目前只有中文）
 examples/vault-demo/      虚构示例记忆库（自由译者「林晓」）
 tools/privacy_scan.py     个人隐私信息正则扫描工具

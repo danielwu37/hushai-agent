@@ -262,6 +262,16 @@ def check_open_items(vault_path: Path) -> CheckItem:
     return CheckItem(id="open-items", level="OK", message="open-items.md 格式合法")
 
 
+def check_candidates(vault_path: Path) -> CheckItem:
+    """检查 hub/reports/candidates.md 中以 '- [' 开头的行是否都能解析（文件可以不存在）。"""
+    from hushai_agent.candidates import format_errors
+
+    bad = format_errors(vault_path)
+    if bad:
+        return CheckItem(id="candidates", level="FAIL", message=f"candidates.md 格式错误: {'; '.join(bad[:3])}")
+    return CheckItem(id="candidates", level="OK", message="candidates.md 格式合法")
+
+
 def validate_vault(vault_path: str | Path) -> dict[str, Any]:
     """对指定 vault 路径执行无配置规范校验。"""
     vpath = Path(vault_path).expanduser().resolve()
@@ -270,6 +280,7 @@ def validate_vault(vault_path: str | Path) -> dict[str, Any]:
         check_inbox_names(vpath),
         check_inbox_lines(vpath, allowed_domains=None),
         check_open_items(vpath),
+        check_candidates(vpath),
         check_sync_conflicts(vpath),
     ]
     ok = all(item.level != "FAIL" for item in checks)

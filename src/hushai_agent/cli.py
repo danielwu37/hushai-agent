@@ -10,6 +10,8 @@ from typing import Any, Sequence
 from hushai_agent import __version__
 from hushai_agent.cli_loop import dispatch_loop_command, register_loop_commands
 from hushai_agent.cli_m3 import dispatch_m3_command, register_m3_commands
+from hushai_agent.cli_m3b import dispatch_m3b_command, register_m3b_commands
+from hushai_agent.cli_m3c import dispatch_m3c_command, register_m3c_commands
 from hushai_agent.config import DEFAULT_LANG, DEFAULT_TIMEZONE, ConfigError
 from hushai_agent.doctor import run_doctor
 from hushai_agent.guard import GuardError
@@ -87,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_loop_commands(subparsers)
     register_m3_commands(subparsers)
+    register_m3b_commands(subparsers)
+    register_m3c_commands(subparsers)
     return parser
 
 
@@ -151,9 +155,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if loop_rc is not None:
             return loop_rc
 
-        m3_rc = dispatch_m3_command(args)
-        if m3_rc is not None:
-            return m3_rc
+        for handler in (dispatch_m3_command, dispatch_m3b_command, dispatch_m3c_command):
+            rc = handler(args)
+            if rc is not None:
+                return rc
 
         print(f"未知命令: {args.command}", file=sys.stderr)
         return 1

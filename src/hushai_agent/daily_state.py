@@ -125,6 +125,9 @@ def merge_daily_facts(
         "unmatched": unmatched,
         "candidates_added": int(prev.get("candidates_added", 0))
         + int(cur.get("candidates_added", 0)),
+        "candidates_skipped": int(prev.get("candidates_skipped", 0))
+        + int(cur.get("candidates_skipped", 0)),
+        "candidates_pending": cur.get("candidates_pending") or prev.get("candidates_pending") or 0,
         "corrections_added": int(prev.get("corrections_added", 0))
         + int(cur.get("corrections_added", 0)),
         "today_count": today_count,

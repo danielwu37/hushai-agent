@@ -77,6 +77,27 @@ def atomic_write(path: str | Path, content: str, roots: Iterable[str | Path]) ->
     return target
 
 
+def atomic_write_bytes(path: str | Path, data: bytes, roots: Iterable[str | Path]) -> Path:
+    """二进制版原子写（交换区收文件用），同样先过路径护栏。"""
+    root_list = list(roots)
+    target = ensure_writable(path, root_list)
+    parent = ensure_writable(target.parent, root_list)
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=os.fspath(parent), prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, target)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    return target
+
+
 def append_line(path: str | Path, line: str, roots: Iterable[str | Path]) -> Path:
     """使用 O_APPEND 一次性写入整行，写入前强制检查路径护栏。"""
     root_list = list(roots)

@@ -164,6 +164,11 @@ def render_default_config(
         "[budget]",
         f"max_daily_calls = {DEFAULT_MAX_DAILY_CALLS}",
         "",
+        "[routing]",
+        "enabled = false",
+        "trusted_doors =",
+        "max_daily = 10",
+        "",
     ]
     return "\n".join(lines)
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: on-event
+
+[Service]
+Type=oneshot
+Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
+Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
+ExecStart={{HUSHAI}} on-event --instance {{INSTANCE}}
+MemoryMax={{MEMORY_MAX}}

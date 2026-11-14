@@ -36,12 +36,16 @@ def run_model(
     meta: dict[str, Any] | None,
     validate: ValidateFn,
     timeout: int | None = None,
+    chain: list[tuple[str, str]] | None = None,
+    text_mode: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """按任务配置的回退链调用模型，包含每日预算拦截与结构校验失败单次重试。
 
     timeout 为 None 时各适配项用自己的配置（[adapters] <名字>.timeout，默认 180 秒）。
+    chain 给出时用它而不是 [jobs] 里的链（路由用）；text_mode 为真时不要结构，
+    交给 validate 的是 {"text": 回答文本}。
     """
-    chain = _get_job_chain(cfg, job)
+    chain = list(chain) if chain else _get_job_chain(cfg, job)
     if not chain:
         return None, {
             "degraded": "no-adapter",
@@ -129,7 +133,7 @@ def run_model(
                 errors.append(f"{adapter_name}:{tier}: {res.error}")
                 break
 
-            clean_data, fatal_error = validate(res.data)
+            clean_data, fatal_error = validate({"text": res.text} if text_mode else res.data)
             if fatal_error is None:
                 return clean_data, {
                     "adapter": adapter_name,

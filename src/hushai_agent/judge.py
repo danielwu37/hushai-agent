@@ -42,6 +42,7 @@ SCHEMA: dict[str, Any] = {
                     "scheduled_date": {"type": ["string", "null"]},
                     "due_date": {"type": ["string", "null"]},
                     "domain": {"type": "string"},
+                    "recommendation": {"type": ["string", "null"]},
                     "source_line_ids": {
                         "type": "array",
                         "items": {"type": "string"},

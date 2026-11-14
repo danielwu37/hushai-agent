@@ -1,0 +1,9 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: daily digest
+
+[Service]
+Type=oneshot
+Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
+Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
+ExecStart={{HUSHAI}} digest --instance {{INSTANCE}}
+MemoryMax={{MEMORY_MAX}}

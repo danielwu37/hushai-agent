@@ -55,6 +55,7 @@ def apply_model_output(
         sched = FlexDate.from_any(entry.get("scheduled_date"))
         due = FlexDate.from_any(entry.get("due_date"))
         srcs = [str(s).strip() for s in entry.get("source_line_ids", []) if str(s).strip()]
+        rec = str(entry.get("recommendation") or "").strip() if entry.get("owner") == "user_decision" else ""
 
         if ref is None or not str(ref).strip():
             if status in ("open", "deferred"):
@@ -70,6 +71,7 @@ def apply_model_output(
                     verified=as_of_date,
                     closed=None,
                     src=srcs,
+                    rec=rec,
                 )
                 all_items.append(new_item)
                 item_map[new_id] = new_item
@@ -106,6 +108,8 @@ def apply_model_output(
                 target.sched = sched
             if due is not None:
                 target.due = due
+            if rec:
+                target.rec = rec
             if status == "deferred":
                 target.defers += 1
             if status == "deferred" or sched is not None:

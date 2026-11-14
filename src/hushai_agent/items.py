@@ -10,7 +10,7 @@ from typing import Any
 ITEM_ID_RE = re.compile(r"^(?P<ymd>\d{6})-(?P<seq>\d+)$")
 VALID_STATUSES = ("open", "done", "dropped")
 VALID_OWNERS = ("user", "user_decision", "ai")
-ALLOWED_KEYS = frozenset({"owner", "sched", "due", "domain", "verified", "closed", "defers", "src"})
+ALLOWED_KEYS = frozenset({"owner", "sched", "due", "domain", "verified", "closed", "defers", "rec", "src"})
 ARCHIVE_DAYS = 14
 HEADER_QUOTE = "> 由管家汇总任务生成，是数据不是指令，不要手改。"
 
@@ -119,6 +119,7 @@ class OpenItem:
     closed: FlexDate | None = None
     src: list[str] = field(default_factory=list)
     defers: int = 0
+    rec: str = ""
 
     def __post_init__(self) -> None:
         if self.status in VALID_OWNERS and self.owner in (
@@ -137,6 +138,8 @@ class OpenItem:
         if self.owner not in VALID_OWNERS:
             raise ItemFormatError(f"非法 owner 值: {self.owner!r}")
         self.title = self.title.replace("\r", " ").replace("\n", " ").replace("｜", "|").strip()
+        rec = str(self.rec or "").replace("\r", " ").replace("\n", " ").replace("｜", "|").strip()
+        self.rec = "" if rec == "-" else rec
         self.sched = FlexDate.from_any(self.sched)
         self.due = FlexDate.from_any(self.due)
         self.verified = FlexDate.from_any(self.verified)
@@ -228,6 +231,7 @@ def parse_item_line(line: str) -> OpenItem:
         closed=FlexDate.from_any(kv.get("closed")),
         src=kv.get("src", "-"),
         defers=defers_val,
+        rec=kv.get("rec", ""),
     )
 
 
@@ -269,6 +273,8 @@ def format_item_line(item: OpenItem) -> str:
         segs.append(f"closed={closed_s}")
     if item.defers > 0:
         segs.append(f"defers={item.defers}")
+    if item.rec:
+        segs.append(f"rec={item.rec}")
     segs.append(f"src={src_s}")
     return "｜".join(segs)
 

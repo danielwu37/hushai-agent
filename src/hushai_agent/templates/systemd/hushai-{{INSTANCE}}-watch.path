@@ -1,0 +1,10 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: watch inbox and exchange
+
+[Path]
+PathChanged={{VAULT}}/hub/inbox
+PathChanged={{VAULT}}/hub/exchange/in
+Unit=hushai-{{INSTANCE}}-watch.service
+
+[Install]
+WantedBy=multi-user.target

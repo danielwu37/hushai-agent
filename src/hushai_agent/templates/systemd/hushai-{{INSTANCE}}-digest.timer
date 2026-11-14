@@ -1,0 +1,9 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: digest timer
+
+[Timer]
+OnCalendar=*-*-* {{DIGEST_TIME}}:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

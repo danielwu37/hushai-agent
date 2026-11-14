@@ -29,6 +29,11 @@ CORRECT_RE = re.compile(
     re.IGNORECASE,
 )
 
+APPROVE_RE = re.compile(
+    r"^(?:批准\s*|approve\s+)(?P<id>C-\d{6}-\d+)\s*(?P<to>画像|规则|profile|rules)$", re.IGNORECASE
+)
+DISCARD_RE = re.compile(r"^(?:丢弃\s*|discard\s+)(?P<id>C-\d{6}-\d+)(?:[\s：:].*)?$", re.IGNORECASE)
+
 CORRECTION_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[1], RESERVED_DOMAINS_EN[1]})
 MEMORY_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[0], RESERVED_DOMAINS_EN[0]})
 
@@ -37,7 +42,7 @@ MEMORY_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[0], RESERVED_DOMAINS_EN[0]})
 class Action:
     """解析出的单条机械对账动作。"""
 
-    kind: str  # "done" | "defer" | "drop" | "correct"
+    kind: str  # "done" | "defer" | "drop" | "correct" | "approve" | "discard"（后两个针对候选记忆）
     target: str
     date: FlexDate | None = None
     note: str = ""
@@ -72,6 +77,7 @@ class AppliedEntry:
     line_id: str
     date: FlexDate | None = None
     record: InboxRecord | None = None
+    reason: str = ""
 
     @property
     def kind(self) -> str:
@@ -143,6 +149,7 @@ class Outcome:
     candidates: list[InboxRecord] = field(default_factory=_RecordList)
     mechanical_ids: set[str] = field(default_factory=_IdSet)
     rest: list[InboxRecord] = field(default_factory=_RecordList)
+    cand_actions: list[tuple[Action, InboxRecord]] = field(default_factory=list)
     items: list[OpenItem] = field(default_factory=list)
 
 
@@ -183,6 +190,13 @@ def parse_action(did: str) -> Action | None:
             note=(m_defer.group("note") or "").strip(),
         )
 
+    m_appr = APPROVE_RE.match(text)
+    if m_appr:
+        return Action(kind="approve", target=m_appr.group("id").upper(), note=m_appr.group("to").lower())
+    m_disc = DISCARD_RE.match(text)
+    if m_disc:
+        return Action(kind="discard", target=m_disc.group("id").upper())
+
     m_corr = CORRECT_RE.match(text)
     if m_corr:
         note = (m_corr.group("note") or "").strip()
@@ -211,6 +225,9 @@ def apply_actions(
             outcome.mechanical_ids.add(rec.line_id)
             if act.kind == "correct":
                 outcome.corrections.append(rec)
+                continue
+            if act.kind in ("approve", "discard"):
+                outcome.cand_actions.append((act, rec))
                 continue
 
             entry = AppliedEntry(
