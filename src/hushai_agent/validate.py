@@ -264,6 +264,48 @@ def check_lessons(vault_path: Path) -> CheckItem:
     return CheckItem(id="lessons", level="OK", message="lessons.md 格式合法")
 
 
+def check_brain(vault_path: Path, index_max_lines: int = 200) -> CheckItem:
+    """检查 second-brain 目录与 hub/index.md 行数上限（兼容未启用 second-brain 的历史 vault）。"""
+    from hushai_agent.brain_model import BRAIN_SUBDIRS, extract_md_links, resolve_hub_link
+
+    hub_dir = vault_path / "hub"
+    idx_file = hub_dir / "index.md"
+    present = idx_file.is_file() or any((hub_dir / d).is_dir() for d in BRAIN_SUBDIRS)
+    if not present:
+        return CheckItem(id="second-brain", level="OK", message="未启用 second-brain 目录（跳过）")
+
+    missing = [f"hub/{d}/" for d in BRAIN_SUBDIRS if not (hub_dir / d).is_dir()]
+    if not idx_file.is_file():
+        missing.append("hub/index.md")
+    if missing:
+        return CheckItem(id="second-brain", level="FAIL", message=f"second-brain 缺失项: {', '.join(missing)}")
+
+    idx_lines = len(idx_file.read_text(encoding="utf-8").splitlines())
+    if idx_lines > index_max_lines:
+        return CheckItem(
+            id="second-brain",
+            level="FAIL",
+            message=f"hub/index.md 行数 {idx_lines} 超过上限 {index_max_lines}",
+        )
+
+    broken: list[str] = []
+    for sub in ("notes", "sources", "people", "projects"):
+        sub_dir = hub_dir / sub
+        for p in sorted(sub_dir.glob("*.md")):
+            txt = p.read_text(encoding="utf-8")
+            for _, target in extract_md_links(txt):
+                res = resolve_hub_link(hub_dir, p, target)
+                if res is None or not res.exists():
+                    broken.append(f"{sub}/{p.name}->{target}")
+    if broken:
+        return CheckItem(
+            id="second-brain",
+            level="WARN",
+            message=f"second-brain 存在断链: {', '.join(broken[:5])}",
+        )
+    return CheckItem(id="second-brain", level="OK", message="second-brain 目录、索引与链接正常")
+
+
 def validate_vault(vault_path: str | Path) -> dict[str, Any]:
     """对指定 vault 路径执行无配置规范校验。"""
     vpath = Path(vault_path).expanduser().resolve()
@@ -275,6 +317,7 @@ def validate_vault(vault_path: str | Path) -> dict[str, Any]:
         check_candidates(vpath),
         check_decisions(vpath),
         check_lessons(vpath),
+        check_brain(vpath),
         check_sync_conflicts(vpath),
     ]
     ok = all(item.level != "FAIL" for item in checks)

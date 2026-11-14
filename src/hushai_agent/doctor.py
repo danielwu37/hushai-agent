@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from hushai_agent import clock, cursor, ledger
+from hushai_agent import brain_cfg, clock, cursor, ledger
 from hushai_agent.config import ConfigError, InstanceConfig, load_instance_config
 from hushai_agent.inboxscan import iter_inbox_lines
 from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.validate import (
     CheckItem,
+    check_brain,
     check_decisions,
     check_inbox_lines,
     check_inbox_names,
@@ -228,6 +229,8 @@ def run_doctor(instance: str) -> dict[str, Any]:
     checks.append(check_open_items(cfg.vault))
     checks.append(check_decisions(cfg.vault))
     checks.append(check_lessons(cfg.vault))
+    bcfg = brain_cfg.load_brain_config(cfg)
+    checks.append(check_brain(cfg.vault, index_max_lines=bcfg.index_max_lines))
     checks.append(check_sync_conflicts(cfg.vault))
     checks.append(_check_state_dir(instance))
     checks.append(_check_vault_git(cfg.vault))

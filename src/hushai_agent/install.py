@@ -13,6 +13,7 @@ from hushai_agent.config import InstanceConfig
 from hushai_agent.paths import get_config_root, get_state_root
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "systemd"
+TEMPLATES_BRAIN_DIR = Path(__file__).resolve().parent / "templates" / "systemd-brain"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MEMORY_RE = re.compile(r"^\d+[KMG]$")
 DEFAULT_DIGEST_TIME = "21:30"
@@ -47,14 +48,71 @@ def _weekly_time(digest_time: str) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def _render_from_dir(tpl_dir: Path, out: Path, values: dict[str, str]) -> list[Path]:
+    written: list[Path] = []
+    for tpl in sorted(tpl_dir.iterdir()):
+        if not tpl.is_file():
+            continue
+        text = tpl.read_text(encoding="utf-8")
+        name = tpl.name
+        for key, val in values.items():
+            text = text.replace(key, val)
+            name = name.replace(key, val)
+        # 唯一不经 fsio 路径护栏的写入：输出目录在三个允许根之外，
+        # 这里只写使用者指定的目录、只写模板里这几个固定文件名。
+        target = out / name
+        target.write_text(text, encoding="utf-8")
+        written.append(target)
+    return written
+
+
+def render_brain_units(
+    cfg: InstanceConfig,
+    out_dir: str | Path,
+    daily_time: str = "21:00",
+    weekly_time: str = "18:00",
+    resurface_time: str = "09:00",
+    memory_max: str = DEFAULT_MEMORY_MAX,
+) -> list[Path]:
+    """渲染 second-brain 专用服务单元模板（只生成文件，不安装、不启用）。"""
+    out = Path(out_dir).expanduser()
+    if not out.is_dir():
+        raise ValueError(f"输出目录不存在: {out_dir}")
+    for label, tval in (
+        ("--daily-time", daily_time),
+        ("--weekly-time", weekly_time),
+        ("--resurface-time", resurface_time),
+    ):
+        if not TIME_RE.match(tval):
+            raise ValueError(f"{label} 需为 HH:MM: {tval}")
+    if not MEMORY_RE.match(memory_max):
+        raise ValueError(f"--memory-max 需形如 256M: {memory_max}")
+    values = {
+        "{{INSTANCE}}": cfg.name,
+        "{{HUSHAI}}": _hushai_command(),
+        "{{VAULT}}": str(cfg.vault),
+        "{{TZ}}": cfg.timezone,
+        "{{USER}}": getpass.getuser(),
+        "{{HOME}}": str(Path.home()),
+        "{{MEMORY_MAX}}": memory_max,
+        "{{BRAIN_DAILY_TIME}}": daily_time,
+        "{{BRAIN_WEEKLY_TIME}}": weekly_time,
+        "{{BRAIN_RESURFACE_TIME}}": resurface_time,
+        "{{CONFIG_ROOT}}": str(get_config_root()),
+        "{{STATE_ROOT}}": str(get_state_root()),
+    }
+    return _render_from_dir(TEMPLATES_BRAIN_DIR, out, values)
+
+
 def render_units(
     cfg: InstanceConfig,
     out_dir: str | Path,
     digest_time: str = DEFAULT_DIGEST_TIME,
     memory_max: str = DEFAULT_MEMORY_MAX,
     port: int = DEFAULT_PORT,
+    with_brain: bool = False,
 ) -> list[Path]:
-    """渲染全部单元模板，返回写出的文件。"""
+    """渲染全部单元模板，返回写出的文件（默认保持 10 个核心单元；with_brain=True 时追加 second-brain 单元）。"""
     out = Path(out_dir).expanduser()
     if not out.is_dir():
         raise ValueError(f"输出目录不存在: {out_dir}")
@@ -76,20 +134,9 @@ def render_units(
         "{{CONFIG_ROOT}}": str(get_config_root()),
         "{{STATE_ROOT}}": str(get_state_root()),
     }
-    written: list[Path] = []
-    for tpl in sorted(TEMPLATES_DIR.iterdir()):
-        if not tpl.is_file():
-            continue
-        text = tpl.read_text(encoding="utf-8")
-        name = tpl.name
-        for key, val in values.items():
-            text = text.replace(key, val)
-            name = name.replace(key, val)
-        # 唯一不经 fsio 路径护栏的写入：输出目录在三个允许根之外，
-        # 这里只写使用者指定的目录、只写模板里这几个固定文件名。
-        target = out / name
-        target.write_text(text, encoding="utf-8")
-        written.append(target)
+    written = _render_from_dir(TEMPLATES_DIR, out, values)
+    if with_brain:
+        written.extend(render_brain_units(cfg, out, memory_max=memory_max))
     return written
 
 

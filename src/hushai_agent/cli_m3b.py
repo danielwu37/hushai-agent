@@ -34,6 +34,7 @@ def register_m3b_commands(subparsers: Any) -> None:
     p_inst.add_argument("--digest-time", default=install.DEFAULT_DIGEST_TIME, help="每日汇总时间 HH:MM")
     p_inst.add_argument("--memory-max", default=install.DEFAULT_MEMORY_MAX, help="内存上限，如 256M")
     p_inst.add_argument("--port", type=int, default=install.DEFAULT_PORT, help="待办页面端口")
+    p_inst.add_argument("--with-brain", action="store_true", help="units：同时渲染 second-brain 定时器单元（默认不启用）")
     p_inst.add_argument("--adapter", choices=("claude", "agy", "all"), default="all", help="doorkit：适配项")
     p_inst.add_argument("--door", default=None, help="doorkit：端编号（默认管家端）")
     p_inst.add_argument("--vault", default=None, help="wizard：vault 目录路径")
@@ -120,7 +121,9 @@ def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
             for path in written:
                 print(f"已生成: {path}")
             return 0
-        written = install.render_units(cfg, args.out, args.digest_time, args.memory_max, args.port)
+        written = install.render_units(
+            cfg, args.out, args.digest_time, args.memory_max, args.port, with_brain=bool(args.with_brain)
+        )
         for path in written:
             print(f"已生成: {path}")
         print("\n".join(install.next_steps(cfg, written)), file=sys.stdout)

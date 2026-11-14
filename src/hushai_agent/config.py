@@ -169,6 +169,20 @@ def render_default_config(
         "trusted_doors =",
         "max_daily = 10",
         "",
+        "[brain]",
+        "enabled = false",
+        "daily_enabled = false",
+        "weekly_enabled = false",
+        "resurface_enabled = false",
+        "monthly_enabled = false",
+        "daily_time = 21:00",
+        "weekly_day = Sun",
+        "weekly_time = 18:00",
+        "resurface_time = 09:00",
+        "min_links = 2",
+        "stale_months = 6",
+        "index_max_lines = 200",
+        "",
     ]
     return "\n".join(lines)
 

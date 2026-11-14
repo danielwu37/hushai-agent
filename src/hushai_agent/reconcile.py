@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from hushai_agent import (
+    brain_cfg,
     brief,
     candidates,
     clock,
@@ -26,6 +27,7 @@ from hushai_agent.daily_state import (  # noqa: F401
     update_daily_state,
 )
 from hushai_agent.digest_apply import (
+    apply_brain_step,
     build_candidate_and_correction_lines,
     commit_hub_if_git,
 )
@@ -55,6 +57,17 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
         rest_id_set = {r.line_id for r in mech.rest}
         processed = [r for r in records if r.line_id not in rest_id_set]
         if not processed:
+            bcfg = brain_cfg.load_brain_config(inst_cfg)
+            brain_info = (
+                apply_brain_step(inst_cfg, as_of_date, records=mech.rest, dry_run=False, process_when_enabled=True)
+                if (bcfg.enabled and bcfg.daily_enabled)
+                else {"filed_count": 0, "auto_linked": [], "broken_links": [], "underlinked_notes": [], "duplicate_candidates": []}
+            )
+            git_committed = (
+                commit_hub_if_git(inst_cfg.vault, f"brain-reconcile {as_of_str} {now_dt.strftime('%H:%M')}")
+                if brain_info.get("filed_count", 0) > 0
+                else False
+            )
             return {
                 "date": as_of_str,
                 "processed_lines": 0,
@@ -62,7 +75,8 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
                 "unmatched": 0,
                 "candidates_added": 0,
                 "corrections_added": 0,
-                "git_committed": False,
+                "brain": brain_info,
+                "git_committed": git_committed,
             }
 
         vault = inst_cfg.vault
@@ -153,6 +167,9 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
         atomic_write(daily_file, report.render_daily(accumulated), [vault])
 
         brief.refresh(inst_cfg)
+        brain_info = apply_brain_step(
+            inst_cfg, as_of_date, records=None, dry_run=False, process_when_enabled=True
+        )
         git_committed = commit_hub_if_git(
             vault, f"mechanical {as_of_str} {now_dt.strftime('%H:%M')}"
         )
@@ -172,6 +189,7 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
             "unmatched": len(mech.unmatched),
             "candidates_added": cand_added,
             "corrections_added": len(corr_lines),
+            "brain": brain_info,
             "git_committed": git_committed,
         }
     finally:

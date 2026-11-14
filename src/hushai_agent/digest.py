@@ -6,12 +6,12 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    brief, candidates, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    brain_cfg, brain_routines, brief, candidates, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
 from hushai_agent.digest_apply import (
-    apply_model_output, build_candidate_and_correction_lines, commit_hub_if_git,
+    apply_brain_step, apply_model_output, build_candidate_and_correction_lines, commit_hub_if_git,
 )
 from hushai_agent.fsio import append_line, atomic_write
 from hushai_agent.items import FlexDate
@@ -252,6 +252,19 @@ def run_digest(
                 cursor.append(inst_cfg, advance_ids, as_of_date)
 
             brief.refresh(inst_cfg)
+            bcfg = brain_cfg.load_brain_config(inst_cfg)
+            if bcfg.enabled and bcfg.daily_enabled:
+                summary["brain_daily"] = brain_routines.run_daily_brain(
+                    inst_cfg, as_of=as_of_date, dry_run=dry_run
+                )
+            else:
+                summary["brain"] = apply_brain_step(
+                    inst_cfg, as_of_date, records=mech.rest, dry_run=dry_run, process_when_enabled=False
+                )
+            if bcfg.enabled and bcfg.resurface_enabled:
+                summary["brain_resurface"] = brain_routines.run_resurface(
+                    inst_cfg, as_of=as_of_date, dry_run=dry_run
+                )
             summary["git_committed"] = commit_hub_if_git(vault, f"digest {as_of_str}")
 
         note_parts = []

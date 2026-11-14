@@ -8,10 +8,28 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from hushai_agent import items, statusfile
+from hushai_agent import brain_process, items, statusfile
+from hushai_agent.config import InstanceConfig
 from hushai_agent.inboxscan import InboxRecord
 from hushai_agent.items import FlexDate, OpenItem
 from hushai_agent.statusfile import StatusRow
+
+
+def apply_brain_step(
+    cfg: InstanceConfig,
+    as_of_date: FlexDate,
+    records: list[InboxRecord] | None = None,
+    dry_run: bool = False,
+    process_when_enabled: bool = True,
+) -> dict[str, Any]:
+    """在 reconcile / digest_apply 加工阶段执行 second-brain 笔记加工、2 链检查与重复判定。"""
+    return brain_process.reconcile_brain_step(
+        cfg,
+        as_of_date=as_of_date,
+        records=records,
+        dry_run=dry_run,
+        process_when_enabled=process_when_enabled,
+    )
 
 
 def apply_model_output(

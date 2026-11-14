@@ -8,6 +8,7 @@ import sys
 from typing import Any, Sequence
 
 from hushai_agent import __version__
+from hushai_agent.cli_brain import dispatch_brain_command, register_brain_commands
 from hushai_agent.cli_loop import dispatch_loop_command, register_loop_commands
 from hushai_agent.cli_m3 import dispatch_m3_command, register_m3_commands
 from hushai_agent.cli_m3b import dispatch_m3b_command, register_m3b_commands
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_m3d_commands(subparsers)
     register_m3e_commands(subparsers)
     register_m5_commands(subparsers)
+    register_brain_commands(subparsers)
     return parser
 
 
@@ -168,6 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dispatch_m3d_command,
             dispatch_m3e_command,
             dispatch_m5_command,
+            dispatch_brain_command,
         ):
             rc = handler(args)
             if rc is not None:

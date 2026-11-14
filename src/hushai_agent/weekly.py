@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from hushai_agent import cursor, items, ledger, lock, ppc, runner, statusfile
+from hushai_agent import brain_cfg, brain_routines, cursor, items, ledger, lock, ppc, runner, statusfile
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.digest_apply import commit_hub_if_git
 from hushai_agent.fsio import atomic_write, read_for_prompt
@@ -148,6 +148,12 @@ def run_weekly(
 
         atomic_write(target_hub / "reports" / f"weekly-{as_of_str}.md", weekly_text, roots)
         ppc_res = ppc.propose_probe_compose(inst_cfg, as_of_date, dry_run=dry_run)
+        bcfg = brain_cfg.load_brain_config(inst_cfg)
+        brain_weekly_res = (
+            brain_routines.run_weekly_brain(inst_cfg, as_of=as_of_date, dry_run=dry_run)
+            if (bcfg.enabled and bcfg.weekly_enabled)
+            else {"skipped": "disabled"}
+        )
         git_committed = False if dry_run else commit_hub_if_git(inst_cfg.vault, f"weekly {as_of_str}")
 
         note = f"degraded={degraded}" if degraded else (f"dropped={len(dropped_list)}" if dropped_list else "")
@@ -172,6 +178,7 @@ def run_weekly(
             "degraded": degraded,
             "ppc_proposed": ppc_res["proposed"],
             "ppc_verified": ppc_res["verified"],
+            "brain_weekly": brain_weekly_res,
             "git_committed": git_committed,
         }
     except Exception as exc:
