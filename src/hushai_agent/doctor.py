@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from hushai_agent import clock, cursor, ledger
 from hushai_agent.config import ConfigError, InstanceConfig, load_instance_config
+from hushai_agent.inboxscan import iter_inbox_lines
+from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.validate import (
     CheckItem,
@@ -129,6 +134,77 @@ def _check_local_only(cfg: InstanceConfig) -> CheckItem:
     return CheckItem(id="local-only", level="OK", message="local_only 路径均已存在")
 
 
+def _parse_ledger_ts(ts_raw: Any, tz: ZoneInfo) -> datetime.datetime | None:
+    """将账本行中的 ISO 时间戳解析为实例时区的 datetime 对象。"""
+    if not isinstance(ts_raw, str) or not ts_raw.strip():
+        return None
+    text = ts_raw.strip()
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        dt = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+
+def _check_ledger_recent(cfg: InstanceConfig) -> CheckItem:
+    """检查账本首行满 3 天后，最近 3 天内是否存在成功的 digest 记录。"""
+    rows = ledger.read(cfg)
+    if not rows:
+        return CheckItem(id="ledger-recent", level="OK", message="账本为空，跳过最近运行检查")
+
+    now_dt = clock.now(cfg)
+    tz = ZoneInfo(cfg.timezone)
+    parsed_rows = [(row, _parse_ledger_ts(row.get("ts"), tz)) for row in rows]
+    first_dt = next((dt for _, dt in parsed_rows if dt is not None), None)
+    if first_dt is None:
+        return CheckItem(id="ledger-recent", level="OK", message="账本无有效时间戳，跳过检查")
+
+    three_days = datetime.timedelta(days=3)
+    if (now_dt - first_dt) < three_days:
+        return CheckItem(id="ledger-recent", level="OK", message="账本首行距今未满 3 天")
+
+    cutoff = now_dt - three_days
+    has_recent_digest = any(
+        row.get("job") == "digest"
+        and row.get("result") in ("ok", "degraded")
+        and dt is not None
+        and dt >= cutoff
+        for row, dt in parsed_rows
+    )
+    if has_recent_digest:
+        return CheckItem(id="ledger-recent", level="OK", message="最近 3 天存在成功的 digest 运行记录")
+    return CheckItem(
+        id="ledger-recent",
+        level="WARN",
+        message="账本首行距今已满 3 天，且最近 3 天没有成功的 digest 记录，定时任务可能未生效",
+    )
+
+
+def _check_inbox_backlog(cfg: InstanceConfig) -> CheckItem:
+    """检查是否存在文件日期早于今天减 2 天且尚未进入游标的合法收件行。"""
+    today_date = clock.today(cfg)
+    cutoff_date = today_date - datetime.timedelta(days=2)
+    digested_ids = cursor.load_ids(cfg)
+    inbox_dir = cfg.vault / "hub" / "inbox"
+
+    backlog = 0
+    for rec in iter_inbox_lines(inbox_dir):
+        rec_date = FlexDate.from_any(rec.date)
+        if rec_date is not None and rec_date < cutoff_date and rec.line_id not in digested_ids:
+            backlog += 1
+
+    if backlog > 0:
+        return CheckItem(
+            id="inbox-backlog",
+            level="WARN",
+            message=f"存在 {backlog} 条早于 {cutoff_date.isoformat()} 且未进入游标的积压收件行",
+        )
+    return CheckItem(id="inbox-backlog", level="OK", message="无超过 2 天的未处理收件积压")
+
+
 def run_doctor(instance: str) -> dict[str, Any]:
     """对指定实例执行全量体检，返回 {"checks": [...], "ok": bool}。"""
     checks: list[CheckItem] = []
@@ -152,6 +228,8 @@ def run_doctor(instance: str) -> dict[str, Any]:
     checks.append(_check_state_dir(instance))
     checks.append(_check_vault_git(cfg.vault))
     checks.append(_check_local_only(cfg))
+    checks.append(_check_ledger_recent(cfg))
+    checks.append(_check_inbox_backlog(cfg))
 
     ok = all(item.level != "FAIL" for item in checks)
     return {

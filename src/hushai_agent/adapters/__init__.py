@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hushai_agent.adapters import proc
+from hushai_agent.adapters.agy import AgyAdapter
 from hushai_agent.adapters.base import Adapter, Result
+from hushai_agent.adapters.claude import ClaudeAdapter
 from hushai_agent.adapters.fake import FakeAdapter
 from hushai_agent.config import InstanceConfig
 
-__all__ = ["Adapter", "FakeAdapter", "Result", "build"]
+__all__ = ["Adapter", "AgyAdapter", "ClaudeAdapter", "FakeAdapter", "Result", "build"]
 
 
 def build(cfg: InstanceConfig, name: str) -> Adapter:
@@ -44,7 +47,10 @@ def build(cfg: InstanceConfig, name: str) -> Adapter:
             default_inbox_dir=cfg.vault / "hub" / "inbox",
         )
 
-    if adapter_type in ("claude", "agy"):
-        raise NotImplementedError(f"适配项类型 '{adapter_type}' 将在 M3 实现")
+    if adapter_type == "claude":
+        return ClaudeAdapter(cfg, proc.load_settings(clean_name, adapter_type, props))
+
+    if adapter_type == "agy":
+        return AgyAdapter(cfg, proc.load_settings(clean_name, adapter_type, props))
 
     raise ValueError(f"未知适配项类型: {adapter_type}")

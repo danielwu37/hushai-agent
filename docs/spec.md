@@ -197,12 +197,20 @@ today_items = 7
 [privacy]
 local_only = domains/health
 
+[adapters]
+# <名字>.type = fake | claude | agy（省略时 type 等于名字）
+# claude / agy 可配 <名字>.command（默认等于类型名）、<名字>.timeout（秒，默认 180）、<名字>.light / .heavy
+
 [jobs]
 digest =
 weekly =
+dispatch =
 window_days = 14
 stale_days = 14
 status_archive_days = 28
+
+[budget]
+max_daily_calls = 20
 ```
 
 字段说明：
@@ -212,6 +220,8 @@ status_archive_days = 28
 - `domains.names`：允许的业务领域列表（逗号分隔）。`lang = zh` 时默认为 `工作,家庭,生活,学习,健康`；`lang = en` 时默认为 `work,family,life,study,health`。
 - `limits`：核心文件行数及 `today.md` 待办条目数上限。
 - `privacy.local_only`：仅保存在本地、不参与外部同步且禁止拼入模型提示词的相对路径黑名单（逗号分隔，默认 `domains/health`，`lang = en` 时同样为 `domains/health`）。
+- `adapters`：模型适配项配置；真适配项支持 `command`（默认等于类型名）、`timeout`（秒，默认 `180`）、`light` 与 `heavy`（对应档位模型名，缺失时该档位调用直接失败）。
+- `jobs.dispatch`：派活默认使用的适配项名字（默认空；v1 仅 `agy` 类型支持代理式派活）。
 
 ---
 
@@ -241,7 +251,7 @@ status_archive_days = 28
 | --- | --- |
 | `hushai version` | 打印版本号 |
 | `hushai init --instance NAME --vault PATH [--timezone TZ] [--lang zh\|en] [--no-git]` | 初始化 vault、配置与状态目录（幂等，只补缺不覆盖；若在已有提交的 Git 仓库中补回了缺失文件，只 `git add` 本次补齐的文件并提交一次，未补文件则不提交） |
-| `hushai doctor --instance NAME [--json]` | 对指定实例执行 9 项体检，存在 `FAIL` 返回 1，否则返回 0 |
+| `hushai doctor --instance NAME [--json]` | 对指定实例执行 11 项体检，存在 `FAIL` 返回 1，否则返回 0 |
 | `hushai validate PATH [--json]` | 无需配置校验任意 vault 目录，存在 `FAIL` 返回 1，否则返回 0 |
 | `hushai inbox add --instance NAME --door ID --domain D --did TEXT [--artifact X] [--todo Y] [--time HH:MM] [--auto]` | 向实例当天该端的收件文件追加一行；若为机械动作或保留领域则自动触发一次即时机械对账 |
 | `hushai digest --instance NAME [--date YYYY-MM-DD] [--for-date YYYY-MM-DD] [--dry-run] [--json]` | 执行每日收件对账与派生视图汇总 |
@@ -250,6 +260,8 @@ status_archive_days = 28
 | `hushai today --instance NAME [--json]` | 读取 `today.md` 四种状态并叠加尚未进游标的机械动作 |
 | `hushai todo done\|defer\|drop TARGET --instance NAME [--to YYYY-MM-DD\|+Nd] [--door ID]` | 回写待办动作并触发即时机械对账（`defer` 省略 `--to` 时默认今天加 7 天） |
 | `hushai ledger --instance NAME [--limit N] [--json]` | 查看运行账本记录 |
+| `hushai adapter test NAME --instance X [--tier light\|heavy] [--json]` | 用极小提示词与结构（`{"ok": true}`）自检问答式适配项，记 `call` 账本行并受每日预算限制 |
+| `hushai dispatch --instance X --name JOB (--task FILE \| --goal TEXT [--domain D]) [--adapter NAME] [--tier heavy] [--workdir DIR] [--timeout SEC] [--json]` | 在隔离工作目录执行代理式派活（默认 `<状态目录>/jobs/<任务名>/work/`，禁止位于 vault 内）；中断带会话号时自动续跑一次，记账并保存 `out.json` |
 
 ### Doctor 检查项清单
 
@@ -264,5 +276,7 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 7. `state-dir`：状态目录存在且可写（异常为 `FAIL`）。
 8. `vault-git`：检查 vault 是否为 Git 仓库（不是则报 `WARN`）。
 9. `local-only`：`[privacy] local_only` 是黑名单规则，所列路径尚未创建也算 `OK`（消息中注明「尚未创建」）；若路径写成绝对路径或包含 `..` 则报 `FAIL`。
+10. `ledger-recent`：账本首行距今（按 `clock`）已满 3 天，且最近 3 天没有 `job == "digest"`、`result ∈ {ok, degraded}` 的行时报 `WARN`（定时任务可能未生效）；账本为空或首行不满 3 天报 `OK`。
+11. `inbox-backlog`：存在文件日期早于今天减 2 天（按 `clock`）、且不在游标 `digested.jsonl` 中的合法收件行时报 `WARN` 并列出条数。
 
 `validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`sync-conflicts`。

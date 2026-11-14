@@ -35,9 +35,12 @@ def run_model(
     schema: dict[str, Any] | None,
     meta: dict[str, Any] | None,
     validate: ValidateFn,
-    timeout: int = 60,
+    timeout: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """按任务配置的回退链调用模型，包含每日预算拦截与结构校验失败单次重试。"""
+    """按任务配置的回退链调用模型，包含每日预算拦截与结构校验失败单次重试。
+
+    timeout 为 None 时各适配项用自己的配置（[adapters] <名字>.timeout，默认 180 秒）。
+    """
     chain = _get_job_chain(cfg, job)
     if not chain:
         return None, {

@@ -17,6 +17,7 @@ from hushai_agent.config_loop import (
     _parse_int_option,
     _parse_optional_sections,
     parse_chain,
+    parse_dispatch_adapter,
     parse_fallback_chain,
     parse_job_chain,
 )
@@ -95,6 +96,7 @@ class InstanceConfig:
     status_archive_days: int = DEFAULT_STATUS_ARCHIVE_DAYS
     max_daily_calls: int = DEFAULT_MAX_DAILY_CALLS
     jobs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    dispatch_adapter: str = ""
 
     @property
     def allowed_domains(self) -> frozenset[str]:
@@ -149,10 +151,12 @@ def render_default_config(
         "[adapters]",
         "# <名字>.type = fake | claude | agy（省略时 type 等于名字）",
         "# fake 另需 <名字>.fixtures = 样例目录；<名字>.light / <名字>.heavy = 模型名",
+        "# claude / agy 可选 <名字>.command（默认等于类型名）、<名字>.timeout（秒，默认 180）",
         "",
         "[jobs]",
         "digest =",
         "weekly =",
+        "dispatch =",
         f"window_days = {DEFAULT_WINDOW_DAYS}",
         f"stale_days = {DEFAULT_STALE_DAYS}",
         f"status_archive_days = {DEFAULT_STATUS_ARCHIVE_DAYS}",
@@ -282,4 +286,5 @@ def load_instance_config(instance: str) -> InstanceConfig:
         status_archive_days=status_archive_days,
         max_daily_calls=max_daily_calls,
         jobs=jobs,
+        dispatch_adapter=parse_dispatch_adapter(parser),
     )

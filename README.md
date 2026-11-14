@@ -59,6 +59,15 @@ hushai validate examples/vault-demo
 
 无需实例配置即可按规范校验任意 vault 的结构、收件文件名、收件行格式与同步冲突文件。
 
+### 5. 闭环汇总、自检与派活（M2 / M3a）
+
+- `hushai digest --instance demo`：每日收集收件、机械对账、模型判断、更新派生视图与提交 Git。
+- `hushai reconcile --instance demo`：立即执行一次纯机械对账（不调用模型）。
+- `hushai weekly --instance demo`：每周近况归档、洞察重写与周报审计。
+- `hushai today --instance demo` / `hushai todo done|defer|drop TARGET --instance demo`：查看与回写今日待办。
+- `hushai adapter test NAME --instance demo`：用极小提示词与结构自检问答式适配项（`claude` / `agy` / `fake`）。
+- `hushai dispatch --instance demo --name JOB (--task FILE | --goal "目标")`：在隔离工作目录派发独立代理任务并落盘记账。
+
 ## 仓库目录说明
 
 ```text
@@ -66,16 +75,29 @@ pyproject.toml            包配置与命令行入口定义
 LICENSE                   MIT 开源许可证
 README.md                 项目简介与快速上手
 docs/spec.md              hushAi-agent 核心规范文档
+docs/design.md            hushAi-agent 架构设计文档
 src/hushai_agent/         核心源码包（标准库实现）
-  cli.py                  命令行参数解析与子命令分发
+  cli.py                  命令行参数解析与主分发
+  cli_loop.py             M2 闭环子命令（today/todo/ledger/digest/weekly/reconcile）
+  cli_m3.py               M3 子命令（adapter test / dispatch）
   config.py               实例配置读写与校验
+  config_loop.py          回退链、适配项、预算与调度配置解析
   paths.py                配置根、状态根与模板路径解析
-  guard.py                写入路径护栏（防目录穿越与外部符号链接）
-  fsio.py                 原子覆写与 O_APPEND 整行追加
+  guard.py                读写路径护栏（防目录穿越、外部符号链接与 local_only）
+  fsio.py                 原子覆写、O_APPEND 整行追加与提示词安全读取
   inboxfmt.py             收件文件名与收件行解析、格式化与校验
+  inboxscan.py            收件行确定性 line_id 与目录有序遍历
   vault.py                记忆库初始化与收件追加逻辑
   validate.py             无配置记忆库规范校验
-  doctor.py               实例全量体检
+  doctor.py               实例全量体检（含运行态 ledger-recent / inbox-backlog）
+  daily_state.py          同日累积日报状态读写与合并
+  reconcile.py            即时纯机械对账（run_mechanical_only）
+  digest.py               每日汇总主流程
+  weekly.py               每周洞察重写与审计周报
+  adapter_cmd.py          适配项自检命令逻辑
+  dispatch.py             代理式派活与中断续跑逻辑
+  adapters/               模型适配层（base / fake / proc / claude / agy）
+  prompts/                内置中文提示词模板（digest / weekly / dispatch-task）
   templates/vault/        初始化默认模板（内置模板正文目前只有中文）
 examples/vault-demo/      虚构示例记忆库（自由译者「林晓」）
 tools/privacy_scan.py     个人隐私信息正则扫描工具

@@ -151,15 +151,16 @@ Result = {ok, data（结构化结果）, text, usage, model, duration, error}
 
 | 适配项 | 问答式调用 | 结构化结果字段 |
 | --- | --- | --- |
-| `claude` | `claude -p --model <m> --output-format json --tools "" --json-schema <结构>`，提示词走标准输入【实测】 | `structured_output` |
-| `agy` | `agy --output-format json --model <m> --json-schema <结构> --print-timeout <秒>s -p="<提示词>"`【实测】 | `structured_output` |
-| `fake` | 不联网，按提示词哈希从样例目录取固定回答 | 同上 |
+| `claude` | `claude -p --model <m> --output-format json --tools "" --safe-mode --no-session-persistence [--json-schema <结构JSON>]`，提示词走标准输入【实测】 | `structured_output` |
+| `agy` | `agy --output-format json --model <m> --print-timeout <秒>s --disable-slash-commands [--json-schema <结构文件路径>] -p=<提示词>`【实测】 | `structured_output` |
+| `fake` | 不联网，按样例文件返回固定回答并解析定位符 | 同上 |
 
-已知限制：
+实现细则与已知限制：
 
-- `agy` 的 `-p` 必须写成 `-p="…"` 的形式，否则会把后一个参数当成提示词【实测】。
-- `agy` 的提示词走命令行参数，Linux 单个参数上限约 128 KB。适配项把提示词限制在 100 KB 内，超过就分批；改走标准输入（`--input-format stream-json`）的办法【未验证】。
-- 调用方式是一条可配置的命令模板，可以是本机命令，也可以经 SSH 调另一台机器。
+- 所有问答式调用均以 `<状态目录>/empty-cwd`（每次调用前清空）为工作目录，避免命令行工具扫描目录加载外部规则；子进程均不经 shell 执行，支持 `[adapters] <名字>.command`、`timeout`（默认 180 秒）、`light`、`heavy` 配置。
+- `claude` 固定带 `--safe-mode` 与 `--no-session-persistence`（不可配置掉），取 `modelUsage` 首键作 `model`，`is_error` 为真、返回码非 0 或非 JSON 输出均判失败。
+- `agy` 问答式先将结构写入 `<状态目录>/schemas/<job>.schema.json` 并传路径；`-p` 必须写成 `-p=<提示词>` 置于末位；提示词 UTF-8 超过 100,000 字节直接返回 `prompt-too-large` 而不调用外部命令；代理式 `agent_run` 使用 `--mode accept-edits`（绝不使用跳过权限确认参数），支持 `--conversation <resume_id>` 续跑及 `conversation_id`/`interrupted` 解析。
+- `hushai adapter test <名字> --instance X [--tier light|heavy]` 用极小提示词与 `{"ok": true}` 结构验证 `complete`，记 `call` 账本行并受每日预算限制。
 
 ### 6.3 回退、降级、预算、锁
 
@@ -194,7 +195,7 @@ Result = {ok, data（结构化结果）, text, usage, model, duration, error}
 
 ### 7.3 派活 `hushai dispatch`
 
-管家把任务书写进 `<状态>/jobs/<任务名>/task.md`，命令按配置调干活端，结果和用量落在同目录，并记账本。任务书必须自足（干活端没有上下文）。验收由管家做：跑测试、回查原文。
+管家把任务书写进 `<状态目录>/jobs/<任务名>/task.md`（任务名匹配 `[a-z0-9][a-z0-9-]{0,40}`，目录已存在则报错不覆盖）：`--task` 直接复制任务书，`--goal` 用内置模板 `prompts/dispatch-task.zh.md` 生成五节自足任务书（`--domain` 经 `fsio.read_for_prompt` 读领域 `AGENTS.md`，`local_only` 或缺失写「无」）。默认适配项取 `[jobs] dispatch`（v1 仅 `agy` 支持代理式），工作目录默认 `<任务目录>/work/`（若传 `--workdir` 则须已存在且不得位于 vault 内）。调用 `agent_run`，若 `interrupted` 且有 `conversation_id` 则自动续跑一次；原始输出存 `out.json`（续跑前存 `out.pre.json`），每次调用记 `call` 账本行（受每日预算限制），结束记 `job` 行。验收由管家做：跑测试、回查原文。
 
 ## 8. 使用者入口
 
@@ -237,7 +238,7 @@ Result = {ok, data（结构化结果）, text, usage, model, duration, error}
 
 - `<状态>/runs.jsonl` 每次任务一行：`ts, job, adapter, model, tier, duration, usage, result`，`result ∈ {ok, degraded, failed, needs_human}`。
 - 由它算三个指标：需要人介入的次数、待办有用率（勾掉、推迟、放弃的比例）、系统自嗨率（使用者可见文件里系统事项的占比，目标 0）。
-- `hushai doctor` 的检查项见 `spec.md`；后续增加：账本近 3 天有无成功的汇总、游标是否推进、同步是否超过一天没成功。
+- `hushai doctor` 除 M1 的 9 项基础检查外，已包含运行态检查 `ledger-recent`（账本满 3 天且近 3 天无成功 `digest` 报 `WARN`）与 `inbox-backlog`（存在早于今天减 2 天且不在游标中的收件行报 `WARN`）；后续继续增加同步检查。
 
 ## 12. 测试
 
@@ -271,6 +272,7 @@ claude.heavy = <重档模型名>
 [jobs]
 digest = agy:light, claude:light
 weekly = agy:heavy, claude:heavy
+dispatch = agy
 window_days = 14
 stale_days = 14
 status_archive_days = 28

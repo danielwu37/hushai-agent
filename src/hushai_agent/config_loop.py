@@ -91,7 +91,7 @@ def _parse_optional_sections(
     jobs: dict[str, list[tuple[str, str]]] = {"digest": [], "weekly": []}
     if parser.has_section("jobs"):
         for opt, raw_val in parser.items("jobs"):
-            if opt in ("window_days", "stale_days", "status_archive_days"):
+            if opt in ("window_days", "stale_days", "status_archive_days", "dispatch"):
                 continue
             jobs[opt.strip()] = parse_fallback_chain(raw_val)
 
@@ -104,3 +104,13 @@ def _parse_optional_sections(
         parser, "budget", "max_daily_calls", DEFAULT_MAX_DAILY_CALLS, allow_zero=True
     )
     return adapters, jobs, window_days, stale_days, status_archive_days, max_daily_calls
+
+
+def parse_dispatch_adapter(parser: configparser.ConfigParser) -> str:
+    """解析 [jobs] dispatch：派活默认使用的适配项名字（只填名字，默认空）。"""
+    if not parser.has_section("jobs") or not parser.has_option("jobs", "dispatch"):
+        return ""
+    raw = parser.get("jobs", "dispatch").strip()
+    if any(ch in raw for ch in (":", ",", " ")):
+        raise ConfigError(f"[jobs] dispatch 只填一个适配项名字（档位用 --tier 指定）: {raw}")
+    return raw
