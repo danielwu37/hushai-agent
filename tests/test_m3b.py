@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -266,8 +267,17 @@ class TestInstallUnits(Base):
         self.assertIn("OnCalendar=*-*-* 20:15:00 Asia/Shanghai", blob)
         self.assertIn(f"PathChanged={self.vault}/hub/inbox", blob)
         self.assertIn("on-event --instance demo", blob)
+        self.assertIn("OnCalendar=Sun *-*-* 21:00:00 Asia/Shanghai", blob)
+        self.assertIn("MemoryMax=512M", blob)
+        self.assertIn("Nice=10", blob)
         self.assertIn("systemctl enable --now", proc.stdout)
         self.assertEqual(before, sorted(str(p) for p in self.vault.rglob("*")))
+
+
+    def test_command_runs_without_install(self) -> None:
+        cmd = install._hushai_command()
+        proc = subprocess.run(cmd.split() + ["version"], capture_output=True, text=True, cwd="/", env={"PATH": "/usr/bin:/bin"})
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
 
 
 if __name__ == "__main__":

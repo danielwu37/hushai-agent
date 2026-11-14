@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
 import sys
@@ -14,14 +15,35 @@ TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "systemd"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MEMORY_RE = re.compile(r"^\d+[KMG]$")
 DEFAULT_DIGEST_TIME = "21:30"
-DEFAULT_MEMORY_MAX = "256M"
+# 实测（11-14）：一次 agy 或 claude 问答式调用进程树峰值约 260–290 MB，256M 会被杀
+DEFAULT_MEMORY_MAX = "512M"
+WEEKLY_GAP_MINUTES = 45
 DEFAULT_PORT = 8765
 
 
 def _hushai_command() -> str:
-    """命令的绝对路径；没装成命令时退回「解释器 -m 包名」。"""
+    """命令的绝对路径；没装成命令时退回「解释器 -m 包名」。
+
+    包没装进解释器时，systemd 与钩子里找不到它，要带上 PYTHONPATH。
+    """
     found = shutil.which("hushai")
-    return found if found else f"{sys.executable} -m hushai_agent"
+    if found:
+        return found
+    pkg_parent = Path(__file__).resolve().parent.parent
+    try:
+        importable = importlib.util.find_spec("hushai_agent", None) is not None and str(pkg_parent) not in sys.path
+    except ValueError:
+        importable = False
+    if importable:
+        return f"{sys.executable} -m hushai_agent"
+    return f"/usr/bin/env PYTHONPATH={pkg_parent} {sys.executable} -m hushai_agent"
+
+
+def _weekly_time(digest_time: str) -> str:
+    """周重写排在汇总之后，避免同一时刻跑两个重任务。"""
+    h, m = map(int, digest_time.split(":"))
+    total = (h * 60 + m + WEEKLY_GAP_MINUTES) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def render_units(
@@ -46,6 +68,7 @@ def render_units(
         "{{TZ}}": cfg.timezone,
         "{{MEMORY_MAX}}": memory_max,
         "{{DIGEST_TIME}}": digest_time,
+        "{{WEEKLY_TIME}}": _weekly_time(digest_time),
         "{{PORT}}": str(int(port)),
         "{{CONFIG_ROOT}}": str(get_config_root()),
         "{{STATE_ROOT}}": str(get_state_root()),

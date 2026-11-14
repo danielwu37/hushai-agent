@@ -6,4 +6,5 @@ Type=oneshot
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 ExecStart={{HUSHAI}} digest --instance {{INSTANCE}}
+Nice=10
 MemoryMax={{MEMORY_MAX}}
