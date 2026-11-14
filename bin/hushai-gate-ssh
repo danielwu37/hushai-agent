@@ -1,0 +1,22 @@
+#!/usr/bin/python3 -I
+"""hushAi-agent SSH 闸门独立入口脚本（兼容 `/usr/bin/python3 -I` 隔离模式）。
+
+说明：
+`python3 -I` 会忽略 PYTHONPATH 环境变量且不挂载用户目录。
+本脚本通过自身物理路径显式将 `<repo>/src` 加入 `sys.path`，
+用于 `~/.ssh/authorized_keys` 的 `command="..."` 强制命令。
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from hushai_agent.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(["gate", "ssh", *sys.argv[1:]]))

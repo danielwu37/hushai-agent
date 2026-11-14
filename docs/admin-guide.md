@@ -149,3 +149,62 @@ hushai uninstall --instance demo --yes
   1. 定时汇总与跨端路由全部使用**无工具问答式接口（`complete`）**，外来内容即使包含提示词注入也无法改动任何文件或执行命令。
   2. 框架所有文件写入强制经过 `guard.ensure_writable` 校验，越界路径与外部符号链接一律硬性拒绝。
   3. 拼入提示词的文件强制经过 `fsio.read_for_prompt` 校验，`[privacy] local_only`（如 `domains/health`）内容永不出本机。
+
+---
+
+## 9. 常驻管家会话与模型切换（`hushai steward`）
+
+服务器可运行一个常驻 tmux 会话（`hushai-<实例>`，由 `hushai-<实例>-steward.service` 托管），工作目录固定为实例的 `vault`，并在本机已登录认证的 **Claude** 与 **Antigravity (`agy`)** 之间通过一条命令切换。
+
+### 9.1 常用命令
+
+```bash
+# 查看当前后端（claude 或 agy）、systemd 单元状态与 tmux 会话存活情况
+hushai steward status --instance <实例>
+
+# 切换到 agy 后端并重启常驻管家会话（切换记录自动写入 hub/inbox/<日>-steward.md）
+hushai steward use agy --instance <实例>
+
+# 切换到 claude 后端并重启常驻管家会话（若仅改配置不立即重启可加 --no-restart）
+hushai steward use claude --instance <实例>
+
+# 手动重启常驻管家服务
+hushai steward restart --instance <实例>
+```
+
+### 9.2 手机端如何连接常驻管家
+
+- **当后端为 `claude` 时**：
+  `start-steward.sh` 运行 `claude remote-control --name "hushAi 管家" --spawn same-dir --permission-mode acceptEdits`。手机打开 Claude App（同一账号），在会话列表选择 `hushAi 管家` 即可直接对话。
+  > 注：`claude remote-control` 子命令解析器不接受 `--setting-sources` 与 `--settings` 参数；会话在 `vault` 目录启动时自动加载 `<vault>/CLAUDE.md` 与 `<vault>/.claude/settings.local.json`，并通过环境变量 `HUB_CAPTURE_CHILD=1` 跳过宿主机全局旧钩子，实现同账号零冲突隔离。
+- **当后端为 `agy` 时**：
+  `start-steward.sh` 运行 `agy --remote-control --mode accept-edits --settings <doorkit>/agy-settings.json`。
+  1. **官方手机网页伴侣（Web Companion）**：Antigravity 无独立原生手机 App，手机浏览器（Safari / Chrome）访问 `https://antigravity.google`，登录同一 Google 账号，在顶部实例切换器中选择服务器会话即可远程操控（可「添加到主屏幕」作为 Web App 使用）。
+  2. **SSH + tmux 保底方案**：若手机网络不便访问 Google 网页端或 WebRTC 受阻，可用手机 SSH 客户端（如 Termius、Blink）连接服务器后执行 `tmux attach -t hushai-<实例>` 直接进入同一个管家终端。
+
+### 9.3 额度耗尽自动接手（`heal` 第 8 项检查 `steward_online`）
+
+`hushai heal` 每 30 分钟检查一次 `steward_online`（管家在线）：
+1. 若 `hushai-<实例>-steward.service` 处于 failed/inactive 或 `tmux` 会话不在，自动重启服务拉起会话。
+2. 若当前 `backend = claude`，且管家日志或屏幕输出出现额度耗尽特征（如 `You've hit your ... limit` 或 `"error":"rate_limit"`），自动执行 `use agy` 切到 `agy`、写入收件，并在 `hub/today.md` 顶部提示一次：`- 系统：管家已临时切到 agy，Claude 额度恢复后说「切回 Claude」`。不会自动切回，待使用者指令后再切回 Claude。
+
+---
+
+## 10. Muse / 移动端 SSH 闸门配置
+
+在 `config.ini` 的 `[gate]` 节可配置只读外部目录根、私密路径黑名单文件、允许写入前缀与日志路径：
+
+```ini
+[gate]
+read_roots = workos=/path/to/workos, music=/path/to/music
+private_paths_file = /path/to/private-paths.txt
+write_allow = 00-我/交换/入/, hub/exchange/in/, music/Playlists/_输入清单/待下载/
+log_file = /var/log/hushai-<实例>-gate.log
+```
+
+在 `~/.ssh/authorized_keys` 中将对应公钥绑定到独立入口脚本 `bin/hushai-gate-ssh`（兼容 `python3 -I`）：
+
+```text
+restrict,command="/usr/bin/python3 -I /path/to/hushai-agent/bin/hushai-gate-ssh --instance <实例> --door muse" ssh-ed25519 AAAA...
+```
+

@@ -59,6 +59,17 @@ def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
             return 1
         opts = {"auto": args.auto, "name": args.name, "ack": args.ack}
         out, rc = gate.run(cfg, args.door, args.gate_command, opts)
+        if out.get("_muse_text"):
+            if rc == 0:
+                payload = out.get("stdout", "")
+                if isinstance(payload, bytes):
+                    sys.stdout.buffer.write(payload)
+                    sys.stdout.buffer.flush()
+                else:
+                    sys.stdout.write(str(payload))
+            else:
+                print(out.get("error", "拒绝"), file=sys.stderr)
+            return rc
         print(json.dumps(out, ensure_ascii=False))
         return rc
 

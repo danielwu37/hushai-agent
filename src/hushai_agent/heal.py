@@ -25,6 +25,7 @@ from hushai_agent.heal_checks import (
 )
 from hushai_agent.inboxfmt import format_inbox_line
 from hushai_agent.paths import get_instance_state_dir
+from hushai_agent.steward import check_steward_online
 from hushai_agent.todaysel import DEGRADED_QUOTE, TODAY_HEADER_RE, TODAY_QUOTE
 
 ALERT_COOLDOWN_SECONDS = 24 * 3600
@@ -41,6 +42,7 @@ CHECKS: tuple[tuple[str, str, CheckFn], ...] = (
     ("memory_write", "记忆写入", check_memory_write),
     ("model_available", "模型可用", check_model_available),
     ("sync_ok", "同步", check_sync_ok),
+    ("steward_online", "管家在线", check_steward_online),
 )
 
 

@@ -126,12 +126,15 @@ def render_doorkit(
     if target_door not in cfg.known_doors:
         raise ValueError(f"未知的端: {target_door}")
 
+    from hushai_agent import steward
+
     hushai_cmd = install._hushai_command()
     written: list[Path] = []
     if adapter in ("claude", "all"):
         written.extend(_render_claude_kit(cfg, out, target_door, hushai_cmd))
     if adapter in ("agy", "all"):
         written.extend(_render_agy_kit(cfg, out, target_door, hushai_cmd))
+    written.extend(steward.render_steward_kit(cfg, out, target_door))
     return written
 
 

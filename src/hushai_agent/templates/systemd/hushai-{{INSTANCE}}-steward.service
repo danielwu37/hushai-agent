@@ -1,0 +1,24 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: persistent steward session (tmux)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=root
+WorkingDirectory={{VAULT}}
+Environment=HOME=/root
+Environment=LANG=C.UTF-8
+Environment=TZ={{TZ}}
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
+Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
+Environment=HUB_CAPTURE_CHILD=1
+MemoryMax=1G
+ExecStart=/usr/bin/tmux new-session -d -s hushai-{{INSTANCE}} -c {{VAULT}} "/bin/bash -lc 'while true; do {{CONFIG_ROOT}}/{{INSTANCE}}/doorkit/start-steward.sh; echo \"[hushai-steward exited $(date -Is)]\" >> {{STATE_ROOT}}/{{INSTANCE}}/steward.log 2>/dev/null || true; sleep 5; done'"
+ExecStop=/usr/bin/tmux kill-session -t hushai-{{INSTANCE}}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

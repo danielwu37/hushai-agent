@@ -82,3 +82,53 @@ ssh <服务器别名> check-inbox --ack
 ## 6. 只能读写文件、不能跑命令的端
 
 这类端（例如只能通过网盘连接器读写的聊天助手）读 `hub/reports/morning-brief.md`，按文末「怎么回写」的写法，在自己端当天的收件文件 `hub/inbox/YYYY-MM-DD-<端>.md` 里追加一行。服务器上的目录监听发现文件变化后自动对账。注意：经网盘同步过来的改动，要等同步工具把文件落到服务器本地盘才会触发；挂载式的网盘目录收不到变更通知，这种情况靠每日汇总兜底。
+
+---
+
+## 5. SSH 文本协议闸门与旧路径兼容（Muse / 移动端 SSH 接入）
+
+除第 2 节的 JSON 闸门外，`hushai gate ssh` 还支持面向移动端 SSH 客户端（如 Muse）的纯文本闸门协议。只要在实例 `config.ini` 的 `[gate]` 节配置了 `read_roots`、`private_paths_file`、`write_allow` 或 `log_file`，或传入下列命令，闸门即按文本协议响应并记录审计日志。
+
+### 5.1 支持的命令与返回码
+
+- `ping`：返回 `ok YYYY-MM-DD HH:MM`。
+- `ls <相对路径>`：列出目录直接子项（自动跳过符号链接与私密路径），每行格式为 `名称[/]\t字节数\tYYYY-MM-DD HH:MM`。
+- `read <相对路径>`：将普通文件原样写到标准输出（单文件上限 2 MB）。
+- `append-inbox <YYYY-MM-DD> [auto]`：从标准输入读取五段式收件行（`- HH:MM｜领域｜做了什么｜产物：…｜待办：…`），校验通过后追加到 `hub/inbox/<YYYY-MM-DD>-<door>[-auto].md`，并立即触发一次 `on-event` 机械对账。
+- `put <相对路径>`：从标准输入读取内容并原子写入 `write_allow` 白名单前缀下的文件，返回 `ok put <N>B -> <路径>\tsha256=<摘要>`。
+- `verify <相对路径>`：核验文件存在性、字节数、修改时间与 SHA-256。
+
+退出码约定：`0` 成功，`1` 一般错误（如文件不存在），`2` 越权拒绝（路径越界、符号链接、私密路径、写只读根、非法命令），`3` 待审批。
+
+### 5.2 `00-我/...` 旧路径到 `vault` 的透明映射表
+
+为兼容旧体系客户端习惯，`hushai gate ssh` 自动将以下 `00-我/...` 路径映射到当前实例的 `vault`：
+
+| 客户端请求路径（旧体系） | 映射到 `vault` 相对路径 | 读写权限 |
+| --- | --- | --- |
+| `00-我` | `hub` | 只读（`ls`） |
+| `00-我/收件`、`00-我/收件/<文件>` | `hub/inbox`、`hub/inbox/<文件>` | 只读（写入走 `append-inbox`） |
+| `00-我/日报`、`00-我/日报/<文件>` | `hub/reports`、`hub/reports/<文件>` | 只读 |
+| `00-我/交换` | `hub/exchange` | 只读 |
+| `00-我/交换/入/<文件>` | `hub/exchange/in/<文件>` | 可读 + `put` 可写 |
+| `00-我/交换/出/<文件>` | `hub/exchange/out/<文件>` | 只读 |
+| `00-我/今日待办.md` | `hub/today.md` | 只读 |
+| `00-我/开放项.md` | `hub/open-items.md` | 只读 |
+| `00-我/近况.md` | `hub/status.md` | 只读 |
+| `00-我/近况-索引.md` | `hub/status-index.md` | 只读 |
+| `00-我/我.md` | `hub/profile.md` | 只读 |
+| `00-我/认知.md` | `hub/insights.md` | 只读 |
+| `00-我/决定.md` | `hub/decisions.md` | 只读 |
+| `00-我/教训.md` | `hub/lessons.md` | 只读 |
+| `00-我/晨间简报.md` | `hub/reports/brief.md` | 只读 |
+| `00-我/AGENTS.md` | `hub/AGENTS.md` | 只读 |
+| `00-我/AGENTS-附录.md` | `hub/AGENTS.local.md` | 只读 |
+
+### 5.3 `authorized_keys` 独立入口脚本
+
+由于 `/usr/bin/python3 -I`（隔离模式）会忽略 `PYTHONPATH` 环境变量，在 `~/.ssh/authorized_keys` 中配置强制命令时，应使用仓库自带的独立入口脚本 `bin/hushai-gate-ssh`：
+
+```text
+restrict,command="/usr/bin/python3 -I /path/to/hushai-agent/bin/hushai-gate-ssh --instance <实例名> --door <端名>" ssh-ed25519 AAAA...
+```
+

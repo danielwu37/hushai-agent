@@ -158,9 +158,15 @@ def run(cfg: InstanceConfig, door: str, sub: str, opts: dict[str, Any], stdin: A
     stream = stdin if stdin is not None else sys.stdin.buffer
     try:
         if sub == "ssh":
+            raw_cmd = os.environ.get("SSH_ORIGINAL_COMMAND", "")
             try:
-                sub, opts = parse_ssh_command(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+                sub, opts = parse_ssh_command(raw_cmd)
             except GateError as exc:
+                from hushai_agent import gate_muse
+
+                if gate_muse.is_muse_ssh_invocation(cfg, raw_cmd):
+                    require_door(cfg, door)
+                    return gate_muse.run_muse_ssh(cfg, door, raw_cmd, stream)
                 return {"error": str(exc)}, SSH_REJECT_RC
         require_door(cfg, door)  # 先验端，再读标准输入
         if sub == "append-inbox":
