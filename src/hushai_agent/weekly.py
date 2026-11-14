@@ -64,7 +64,7 @@ def run_weekly(
     as_of_str = as_of_date.isoformat()
 
     try:
-        lock_ctx = lock.runner_lock(inst_cfg)
+        lock_ctx = lock.runner_lock(inst_cfg, wait_seconds=lock.job_wait_seconds())
         lock_ctx.__enter__()
     except lock.LockBusy:
         ledger.record(

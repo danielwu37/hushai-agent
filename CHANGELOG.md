@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and release notes are aggregated automatically via [GitHub Releases](https://github.com/danielwu37/hushai-agent/releases).
 
+## [Unreleased]
+
+### Security
+- `agy` 问答式调用加会话级拒绝规则（命令、读写文件、网页、MCP 全部禁用）。实测此前 `agy -p` 能写文件、跑命令，收件原文可借汇总执行命令。
+- 文件追加加 `O_NOFOLLOW` 并写满为止；新建文件权限 `0600`，覆写沿用原权限。
+- 交换区存文件用 `O_EXCL` 先占名，并发同名上传不再互相覆盖。
+- Muse 闸门写入白名单按目录边界匹配；`append-inbox` 拒绝不存在的日期（如 2026-02-31）。
+
+### Fixed
+- 自愈：挂载单元先过白名单再卸载（此前会先 `fusermount -uz` 再被白名单拒绝，挂载起不来）；白名单接受顶级 `mnt-onedrive.mount`。
+- 开放项保存改为先归档、后重写，并按编号去重；解析不了的条目行存入 `reports/quarantine.md`，不再随重写消失。
+- 额度用尽自动切换后检查重启结果，失败如实上报；tmux 目标改精确匹配，额度识别只看屏幕最后 40 行。
+- 汇总、周重写拿锁时最多等 60 秒（`HUSHAI_LOCK_WAIT`），不再因同一刻的几秒对账而整晚跳过；自检有独立 `heal.lock`。
+- 子进程超时整组终止，不留下孙进程。
+- `install units` 的启用命令包含 `steward.service`。
+
 ## [0.1.0] - 2026-11-14
 
 ### Added

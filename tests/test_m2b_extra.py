@@ -154,6 +154,7 @@ class TestM2bExtra(unittest.TestCase):
     def test_09_lock_busy_returns_1_and_records_failed(self) -> None:
         """9. 锁：先占住锁再跑 digest -> 返回 1，账本有 failed 行（note=lock-busy）。"""
         _, cfg = self._setup(no_git=True)
+        os.environ["HUSHAI_LOCK_WAIT"] = "0"
         with lock.runner_lock(cfg):
             res = self.run_cli("digest", "--instance", "demo", "--date", "2026-03-02")
             self.assertEqual(res.returncode, 1)

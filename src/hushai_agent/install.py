@@ -96,7 +96,7 @@ def render_units(
 def next_steps(cfg: InstanceConfig, written: list[Path]) -> list[str]:
     """打印给安装者自己执行的命令（本程序不执行）。"""
     names = sorted(p.name for p in written)
-    enable = [n for n in names if n.endswith((".path", ".timer"))]
+    enable = [n for n in names if n.endswith((".path", ".timer")) or n.endswith("-steward.service")]
     return [
         "以下命令由安装者自己核对后执行，本程序没有安装或启用任何单元：",
         f"  sudo cp {written[0].parent}/hushai-{cfg.name}-*.* /etc/systemd/system/",

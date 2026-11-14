@@ -132,7 +132,7 @@ def status(cfg: InstanceConfig, hooks: dict[str, Any] | None = None) -> dict[str
     if "steward_tmux_alive" in (hooks or {}):
         tmux_alive = bool((hooks or {})["steward_tmux_alive"])
     else:
-        rc_tmux, _ = run_cmd(["tmux", "has-session", "-t", session], timeout=10)
+        rc_tmux, _ = run_cmd(["tmux", "has-session", "-t", f"={session}"], timeout=10)
         tmux_alive = rc_tmux == 0
 
     return {
@@ -229,7 +229,8 @@ def detect_claude_quota_exhausted(cfg: InstanceConfig, hooks: dict[str, Any] | N
             idx = raw.rfind("[hushai-steward start backend=claude")
             texts.append(raw[idx:] if idx >= 0 else raw[-8000:])
         run_cmd: Callable[..., tuple[int, str]] = (hooks or {}).get("cmd_runner") or _default_cmd_runner
-        rc, pane = run_cmd(["tmux", "capture-pane", "-p", "-t", f"hushai-{cfg.name}", "-S", "-120"], timeout=5)
+        # 只看屏幕最后 40 行、精确会话名；更早的滚屏多半是对话内容，容易误判
+        rc, pane = run_cmd(["tmux", "capture-pane", "-p", "-t", f"=hushai-{cfg.name}", "-S", "-40"], timeout=5)
         if rc == 0 and pane:
             texts.append(pane)
     for blob in texts:
@@ -251,7 +252,15 @@ def check_steward_online(cfg: InstanceConfig, before: str | None, dry_run: bool,
 
     backend = get_backend(cfg)
     if backend == "claude" and (hit := detect_claude_quota_exhausted(cfg, hooks)):
-        use_backend(cfg, "agy", restart=True, dry_run=dry_run, reason="Claude 额度用尽自动接手", hooks=hooks)
+        sw = use_backend(cfg, "agy", restart=True, dry_run=dry_run, reason="Claude 额度用尽自动接手", hooks=hooks)
+        if not sw.get("ok"):
+            return {
+                "status": "failed",
+                "problem": f"Claude 额度用尽（{hit}），切到 agy 后重启失败（{sw.get('restart_detail')}）",
+                "action": "hushai steward use agy",
+                "suggestion": f"人工运行 hushai steward restart --instance {cfg.name}",
+                "tries": 1,
+            }
         if not dry_run:
             _prepend_today_alert(cfg, TODAY_SWITCH_ALERT)
         return {

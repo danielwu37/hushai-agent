@@ -37,3 +37,12 @@ def now(cfg: Any = None) -> datetime.datetime:
 def today(cfg: Any = None) -> datetime.date:
     """返回实例时区的当前日期。"""
     return now(cfg).date()
+
+
+def is_real_date(text: str) -> bool:
+    """YYYY-MM-DD 且是日历上真实存在的日子（2026-02-31 不算）。"""
+    try:
+        datetime.date.fromisoformat(text)
+    except (TypeError, ValueError):
+        return False
+    return True

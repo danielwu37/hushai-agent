@@ -13,7 +13,8 @@ from typing import Any
 from hushai_agent import clock, on_event
 from hushai_agent.config import InstanceConfig
 from hushai_agent.config_ext import load_ext
-from hushai_agent.fsio import append_line_with_header, atomic_write, atomic_write_bytes
+from hushai_agent.fsio import append_line_with_header, atomic_write, atomic_write_bytes, ensure_dir
+from hushai_agent.guard import ensure_writable
 from hushai_agent.inboxfmt import (
     InboxFormatError,
     format_inbox_filename,
@@ -95,11 +96,17 @@ def put_exchange(cfg: InstanceConfig, door: str, name: str, data: bytes) -> dict
     if len(data) > max_kb * 1024:
         raise GateError(f"文件超过 {max_kb} KB")
     folder = cfg.vault / "hub" / "exchange" / "in" / door
-    target = folder / f"{stem}{ext}"
-    n = 0
-    while target.exists():
-        n += 1
-        target = folder / f"{stem}-{n}{ext}"
+    ensure_dir(folder, [cfg.vault])
+    # O_EXCL 先占名：两端同时传同名文件时各得一个序号，不会互相覆盖
+    for n in range(0, 1000):
+        target = folder / (f"{stem}{ext}" if n == 0 else f"{stem}-{n}{ext}")
+        try:
+            os.close(os.open(os.fspath(ensure_writable(target, [cfg.vault])), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600))
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise GateError("同名文件过多")
     atomic_write_bytes(target, data, [cfg.vault])
     return {"path": target.relative_to(cfg.vault).as_posix(), "bytes": len(data)}
 

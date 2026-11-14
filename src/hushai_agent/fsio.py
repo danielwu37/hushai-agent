@@ -11,6 +11,29 @@ from typing import Iterable
 from hushai_agent.guard import GuardError, ensure_prompt_allowed, ensure_writable
 
 
+# 新建文件只给属主读写；检查之后、打开之前路径被换成符号链接时，O_NOFOLLOW 让打开直接失败
+NEW_FILE_MODE = 0o600
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _keep_mode(target: Path) -> int:
+    """原子覆写沿用原文件权限；新文件用 NEW_FILE_MODE。"""
+    try:
+        return os.stat(target).st_mode & 0o777
+    except OSError:
+        return NEW_FILE_MODE
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    """写满为止；磁盘满等情况下的短写不再被当成成功。"""
+    view = memoryview(payload)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError("写入不完整")
+        view = view[n:]
+
+
 def ensure_dir(path: str | Path, roots: Iterable[str | Path]) -> Path:
     """经路径护栏检查后创建目录（含父目录）。"""
     root_list = list(roots)
@@ -65,6 +88,7 @@ def atomic_write(path: str | Path, content: str, roots: Iterable[str | Path]) ->
             tmp_file.write(content)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
+        os.chmod(tmp_path, _keep_mode(target))
         os.replace(tmp_path, target)
         tmp_path = None
     finally:
@@ -89,7 +113,7 @@ def atomic_write_bytes(path: str | Path, data: bytes, roots: Iterable[str | Path
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp_path, 0o644)
+        os.chmod(tmp_path, _keep_mode(target))
         os.replace(tmp_path, target)
     except BaseException:
         if os.path.exists(tmp_path):
@@ -110,9 +134,9 @@ def append_line(path: str | Path, line: str, roots: Iterable[str | Path]) -> Pat
         raise ValueError("append_line 单次写入内容中不能包含换行符")
 
     payload = (cleaned + "\n").encode("utf-8")
-    fd = os.open(os.fspath(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    fd = os.open(os.fspath(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW, NEW_FILE_MODE)
     try:
-        os.write(fd, payload)
+        _write_all(fd, payload)
     finally:
         os.close(fd)
 
@@ -141,24 +165,24 @@ def append_line_with_header(
     try:
         fd = os.open(
             os.fspath(target),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o644,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+            NEW_FILE_MODE,
         )
     except FileExistsError:
         payload = (clean_line + "\n").encode("utf-8")
         fd = os.open(
             os.fspath(target),
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-            0o644,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW,
+            NEW_FILE_MODE,
         )
         try:
-            os.write(fd, payload)
+            _write_all(fd, payload)
         finally:
             os.close(fd)
     else:
         payload = (clean_header + "\n" + clean_line + "\n").encode("utf-8")
         try:
-            os.write(fd, payload)
+            _write_all(fd, payload)
         finally:
             os.close(fd)
 

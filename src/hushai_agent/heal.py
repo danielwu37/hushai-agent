@@ -56,7 +56,7 @@ def is_whitelisted_unit(instance: str, unit_name: str) -> bool:
         return True
     if re.match(r"^rclone-[a-z0-9-]+(\.service)?$", name):
         return True
-    if re.match(r"^mnt-onedrive-[a-zA-Z0-9_\-\.\\]+(\.mount)$", name):
+    if re.match(r"^mnt-onedrive(-[a-zA-Z0-9_\-\.\\]+)?\.mount$", name):
         return True
     return False
 
@@ -164,10 +164,25 @@ def run_heal(
     dry_run: bool = False,
     hooks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """执行静默自愈健康检查主流程。"""
+    """执行静默自愈健康检查主流程；同一实例同时只跑一个（heal.lock，与 runner.lock 分开，免得补跑汇总时自锁）。"""
+    from hushai_agent import lock
+
     inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
     if before is not None and before not in ("digest", "weekly"):
         raise ValueError(f"--before 仅支持 digest 或 weekly: {before}")
+    try:
+        with lock.runner_lock(inst_cfg, name="heal.lock"):
+            return _run_heal_locked(inst_cfg, before, dry_run, hooks)
+    except lock.LockBusy:
+        return {"ok": True, "instance": inst_cfg.name, "skipped": "另一次自检正在运行", "checks": []}
+
+
+def _run_heal_locked(
+    inst_cfg: InstanceConfig,
+    before: str | None,
+    dry_run: bool,
+    hooks: dict[str, Any] | None,
+) -> dict[str, Any]:
 
     env_hooks = dict(hooks or {})
     results: list[dict[str, Any]] = []

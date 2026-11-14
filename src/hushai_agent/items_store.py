@@ -14,8 +14,10 @@ from hushai_agent.items import (
     HEADER_QUOTE,
     ITEM_ID_RE,
     FlexDate,
+    ItemFormatError,
     OpenItem,
     format_item_line,
+    parse_item_line,
     parse_items,
 )
 
@@ -126,19 +128,46 @@ def load_archived_ids(cfg: InstanceConfig | Path | str) -> set[str]:
     return {item.id for item in parse_items(text)}
 
 
+def _quarantine_unparsed(vault: Path, open_path: Path) -> None:
+    """重写前把 open-items.md 里解析不了的条目行原样存进 reports/quarantine.md，不让它们随重写消失。"""
+    if not open_path.is_file():
+        return
+    bad: list[str] = []
+    for raw in open_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line.startswith("- ["):
+            continue
+        try:
+            parse_item_line(line)
+        except ItemFormatError:
+            bad.append(line)
+    if not bad:
+        return
+    q_path = vault / "hub" / "reports" / "quarantine.md"
+    have = set(q_path.read_text(encoding="utf-8").splitlines()) if q_path.is_file() else set()
+    for line in bad:
+        if line not in have:
+            append_line(q_path, line, [vault])
+
+
 def save(
     cfg: InstanceConfig | Path | str,
     items: Iterable[OpenItem],
     as_of: datetime.date | str,
 ) -> tuple[list[OpenItem], list[OpenItem]]:
-    """分流并保存 open-items.md（atomic_write）与归档 closed-items.md（append_line）。"""
+    """分流保存：先追加归档 closed-items.md，再重写 open-items.md。
+
+    顺序不能反：中途崩溃时宁可同一条在两边各有一份（归档按编号去重），也不能两边都没有。
+    """
     vault = _resolve_vault(cfg)
     keep, archive = split_archive(items, as_of)
     open_path = vault / "hub" / "open-items.md"
-    atomic_write(open_path, render_open_items(keep, as_of), [vault])
-
     if archive:
         archive_path = vault / "hub" / "reports" / "closed-items.md"
+        archived = load_archived_ids(vault)
         for item in archive:
-            append_line(archive_path, format_item_line(item), [vault])
+            if item.id not in archived:
+                append_line(archive_path, format_item_line(item), [vault])
+    _quarantine_unparsed(vault, open_path)
+    atomic_write(open_path, render_open_items(keep, as_of), [vault])
     return keep, archive

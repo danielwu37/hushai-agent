@@ -19,6 +19,12 @@ PROMPT_TOO_LARGE = "prompt-too-large"
 # 子进程超时比 --print-timeout 多留几秒，让 agy 自己先超时并给出错误信息
 KILL_GRACE_SECONDS = 2
 CONVERSATION_KEYS = ("conversation_id", "conversationId", "conversation")
+# 问答式必须无工具：agy -p 默认能写文件、跑命令（11-14 本机实测），
+# 收件原文里的一句话就能借汇总执行命令。会话级设置不落盘，只对这一次调用生效。
+NO_TOOLS_SETTINGS = json.dumps({"permissions": {"deny": [
+    "command(*)", "mcp(*)", "write_file(*)", "read_file(*)",
+    "read_url(*)", "download_url(*)", "execute_url(*)",
+]}})
 
 
 def prompt_too_large(prompt: str) -> bool:
@@ -122,6 +128,7 @@ class AgyAdapter(Adapter):
             "--model", model,
             "--print-timeout", f"{seconds}s",
             "--disable-slash-commands",
+            "--settings", NO_TOOLS_SETTINGS,
         ]
         if schema is not None:
             argv += ["--json-schema", str(self.write_schema(schema, meta))]

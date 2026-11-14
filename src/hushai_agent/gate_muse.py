@@ -234,7 +234,7 @@ def run_muse_ssh(cfg: InstanceConfig, door: str, raw_cmd: str, stdin_stream: Any
 
         if cmd == "append-inbox" and len(args) in (1, 2):
             date_str, auto = args[0], (len(args) == 2 and args[1] == "auto")
-            if not DATE_RE.match(date_str) or (len(args) == 2 and not auto):
+            if not (DATE_RE.match(date_str) and clock.is_real_date(date_str)) or (len(args) == 2 and not auto):
                 raise PermissionError("拒绝：用法 append-inbox YYYY-MM-DD [auto]")
             lines = [ln.rstrip("\r") for ln in stdin_stream.read(256 * 1024 + 1).decode("utf-8", errors="replace").splitlines() if ln.strip()]
             if not lines:
@@ -264,7 +264,7 @@ def run_muse_ssh(cfg: InstanceConfig, door: str, raw_cmd: str, stdin_stream: Any
         if cmd == "put" and len(args) == 1:
             norm_pre = posixpath.normpath(args[0].replace("\\", "/")).lstrip("/")
             fname = norm_pre.rsplit("/", 1)[-1]
-            if fname.startswith(".") or not any(norm_pre.startswith(pfx) for pfx in mcfg.write_allow) or args[0].endswith("/"):
+            if fname.startswith(".") or not any(norm_pre.startswith(pfx.rstrip("/") + "/") for pfx in mcfg.write_allow) or args[0].endswith("/"):
                 raise PermissionError(f"拒绝：不在写入白名单 ({norm_pre})")
             p, norm = resolve_path(cfg, mcfg, args[0], allow_missing=True)
             if norm.startswith(("00-我/交换/入/", "hub/exchange/in/")) and not fname.endswith(TEXT_EXT):

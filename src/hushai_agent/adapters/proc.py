@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -98,6 +100,27 @@ def _to_text(value: Any) -> str:
     return str(value)
 
 
+def _run_group(args: list[str], kwargs: dict[str, Any]) -> subprocess.CompletedProcess:
+    """同 subprocess.run，但子进程自成一组；超时时整组杀掉，不留下孙进程（agy、claude 会再起子进程）。"""
+    timeout = kwargs.pop("timeout")
+    data = kwargs.pop("input", None)
+    kwargs.pop("check", None)
+    kwargs.pop("capture_output", None)
+    if data is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, **kwargs) as p:
+        try:
+            out, err = p.communicate(data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = p.communicate()
+            raise subprocess.TimeoutExpired(args, timeout, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(args, p.returncode, out, err)
+
+
 def run(
     argv: Sequence[str],
     stdin_text: str | None,
@@ -131,7 +154,7 @@ def run(
         kwargs["input"] = stdin_text
 
     try:
-        completed = subprocess.run(args, **kwargs)
+        completed = _run_group(args, kwargs)
     except subprocess.TimeoutExpired as exc:
         duration = round(time.monotonic() - t0, 4)
         err = _to_text(exc.stderr).strip()

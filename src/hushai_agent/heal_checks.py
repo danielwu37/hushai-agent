@@ -97,7 +97,16 @@ def check_vault_rw(cfg: InstanceConfig, before: str | None, dry_run: bool, hooks
             "suggestion": f"检查 {cfg.vault} 目录权限与文件系统状态",
         }
 
+    from hushai_agent.heal import is_whitelisted_unit
+
     mountpoint, mount_unit = mount_info
+    # 先确认单元可管，再卸载：卸载后若不准重启，挂载就再也起不来
+    if not is_whitelisted_unit(cfg.name, mount_unit):
+        return {
+            "status": "failed",
+            "problem": f"挂载点 {mountpoint} 不可读写（{detail}），对应单元 {mount_unit} 不在自愈白名单",
+            "suggestion": f"人工核查挂载 {mountpoint}；未做任何卸载",
+        }
     run_cmd: Callable[..., tuple[int, str]] = hooks.get("cmd_runner") or _default_cmd_runner
     actions: list[str] = []
     for attempt in range(1, 3):
