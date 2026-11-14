@@ -1,6 +1,6 @@
 # hushAi-agent
 
-> **hushAi-agent** 是一个面向个人与轻量 VPS 部署的开源个人 AI 记忆与常驻管家框架，通过以本地纯文本 Markdown 为唯一事实源与厂商中立的双模型流水线，解决跨端对话记忆割裂、AI 厂商锁定及服务运维繁琐的核心痛点。
+> 一个装在你自己服务器上的 AI 管家。它把你和各种 AI 聊过、办过的事记在一个普通文件夹里，每晚帮你整理成「明天要办什么」，第二天早上给你一份简报。换哪家 AI 都能接着用，记忆始终是你自己的。
 
 [![GitHub release](https://img.shields.io/github/v/release/danielwu37/hushai-agent?style=flat-square)](https://github.com/danielwu37/hushai-agent/releases)
 [![License](https://img.shields.io/github/license/danielwu37/hushai-agent?style=flat-square)](./LICENSE)
@@ -8,157 +8,190 @@
 
 ---
 
-## 1. 项目目标 (Why & Goals)
+## 它解决什么问题
 
-在长期使用 AI 助手的个人场景中，传统做法通常面临记忆锁死在单一云厂商、不同设备间状态不同步、模型额度耗尽后对话中断、以及需要频繁手工维护提示词和数据库等痛点。`hushAi-agent` 提供了一套 **纯文本、零外部依赖、低维护成本** 的个人底座方案：
+如果你同时用好几个 AI（手机上一个、电脑上一个、服务器上一个），大概遇到过这些情况：
 
-- **核心目标**：实现「多端只追加记录 → 定时/即时机械与模型汇总 → 多入口可读可勾」的个人记忆闭环，让不同 AI 工具安全协作读写同一份属于你自己的记忆库（`vault`）。
-- **适用边界 (In Scope)**：个人服务器（2 GB 内存即可）上的持久化记忆管理、日常待办筛选与晨间简报、多 AI CLI 切换与额度兜底、SSH 受控多端读写与静默自愈。
-- **非目标 (Non-Goals)**：本项目不自建重型数据库/向量库/消息队列，不替代上游 AI CLI 本身的客户端界面，也不绑定特定云端域名或公网反代方案。
+- 在 A 里说过的事，B 不知道，每次都要重新交代背景；
+- 聊完就忘，答应要办的事散在各个聊天记录里，没人提醒；
+- 某家 AI 额度用完或停服，之前积累的「它对你的了解」一起没了。
 
----
+hushAi-agent 的做法很简单：**所有 AI 都把「做了什么」记到同一个文件夹，由它每天整理一次。** 文件夹里全是能直接打开看的文本文件，拷走就能换机器、换 AI。
 
-## 2. 核心功能 (Features)
+## 它能做什么
 
-- **记忆三层与对账闭环**：严格区分「约定层（画像与规则）」「记录层（各端只追加收件）」与「派生层（开放项、近况、今日待办、洞察与日报）」；确定性操作（完成/推迟/放弃/更正）毫秒级纯代码落盘，派生视图可随时由记录层重算。
-- **多 AI 引擎与常驻管家切换**：内置 `claude` 与 `agy`（Antigravity CLI）适配及 `fake` 离线测试桩，后台流水线支持 `light`/`heavy` 回退链与每日预算护栏；常驻 `tmux` 管家支持一条命令在模型间切换，检测到 Claude 额度耗尽时自动由 `agy` 接手并置顶提醒。
-- **多端受控接入与简报界面**：提供只读与受限写入的 SSH 强制命令闸门（含透明路径兼容）、事件驱动跨端只读路由、单屏晨间简报（Markdown / HTML）以及仅监听本机回环、凭令牌认证的可点选待办网页。
-- **静默自愈与极简生命周期**：内置 8 项定时自愈巡检（磁盘、挂载探针、监听单元、定时补跑、管家在线与额度接手），所有系统日志只写运行账本不污染人类视图；支持一键安装向导、完整导出打包与无损模板升级。
+| 功能 | 说明 |
+| --- | --- |
+| 统一记事本 | 每个 AI、每台设备做完一件事，就往当天的「收件」里记一行。会话结束时也能自动记 |
+| 每晚整理 | 每晚自动把当天的收件读一遍，整理出新的待办，关掉办完的，更新各项目近况 |
+| 今日待办和晨间简报 | 每天早上给一份清单：要你亲自办的事（最多 7 条）、等你拍板的事、AI 想记住的关于你的新信息（你批准了才记） |
+| 常驻管家 | 服务器上一直开着一个 AI 对话，手机上随时能找它。用 Claude 还是 Antigravity（agy）由你选，一条命令切换 |
+| 两家 AI 互为备份 | 整理任务先用一家，失败自动换另一家；两家都不行时也会出一份简化版待办，不会整晚空着 |
+| 自己检查、自己修 | 每小时自查一次：定时任务有没有跑、文件能不能写、管家在不在线。能修的自己修，只记一笔；修不好才在待办顶上告诉你 |
+| 安全边界 | 别的设备只能通过受限的 SSH 入口读写指定目录；整理时交给 AI 的只有文字，AI 不能动你的文件、不能执行命令；标成「仅本机」的目录（比如健康资料）永远不会发给 AI 或同步出去 |
 
----
+**它不做什么**：不做聊天 App，不建数据库，不需要你学新软件。对话还是在你原来用的 AI 里进行。
 
-## 3. 实现路径与架构 (How It Works)
-
-### 核心数据流
-
-```mermaid
-flowchart LR
-    A[多端入口<br/>CLI / SSH 闸门 / Web / 对话钩子] -->|只追加| B[记录层 hub/inbox]
-    B -->|inotify / 即时调用| C{核心流水线<br/>机械对账 + 校验}
-    C -->|确定性动作| D[派生视图<br/>today / open-items / brief]
-    C -->|每日汇总 / 每周重写| E[模型适配链<br/>agy / claude 回退]
-    E -->|Strict JSON| D
-    F[静默自愈 heal & 管家守护] -->|巡检/额度接手| E
-```
-
-1. **只追加采集**：手机、桌面或常驻管家会话结束时，经路径护栏或 SSH 闸门将五段式事实行追加到当天的收件文件（`hub/inbox/YYYY-MM-DD-<端>.md`）。
-2. **机械优先对账**：收件落盘后立即触发轻量事件处理，优先用纯代码消化办完、推迟、放弃、决定、教训与候选记忆，不消耗模型额度。
-3. **有限模型判断与落盘**：每日定时任务在隔离空目录下调用无工具问答模型提取新增事项与近况，经代码严格校验字段与 `line_id` 后原子覆写派生文件并本地 Git 提交。
-
-### 技术栈与选型理由
-
-| 组件 | 选型 | 理由 |
-| :--- | :--- | :--- |
-| 运行时与依赖 | **Python 3.10+（纯标准库）** | 零第三方包依赖，避免版本冲突与漫长构建，极简 VPS 开箱即跑 |
-| 存储格式 | **Markdown + JSONL + 本地 Git** | 人类可读、不锁厂商、可审计可回滚，无需维护数据库守护进程 |
-| 调度与常驻 | **systemd + tmux** | 系统原生生命周期管理与断线重连，进程峰值 1 GB 内存以内即可稳定运行 |
-| 远端同步 | **rclone copy（非挂载点）** | 按文件归属单向同步，规避网盘 FUSE 挂载卡死拖垮整机进程 |
-
-### 目录结构（顶层职责）
+## 一天是怎么过的
 
 ```text
-.
-├── bin/                   # 免 pip 直启命令行包装与 SSH 强制命令隔离入口
-├── docs/                  # 架构规范、多端接入协议、使用者与管理员手册
-├── examples/              # 虚构示例记忆库（可直接用于本地验证与体验）
-├── src/hushai_agent/      # 核心包：CLI、记忆库引擎、适配层、闸门、自愈与模板
-├── tests/                 # 离线自动化单元测试套件（基于 fake 适配器）
-├── tools/                 # 隐私扫描等辅助研发工具
-├── pyproject.toml         # 标准 Python 包元数据与命令入口定义
-└── CHANGELOG.md           # 版本变更记录
+白天   你在手机上跟管家说「约了周六带孩子去牙医」
+       → 管家记一行收件
+晚上   每晚整理：发现一件新待办「周六去牙医」
+早上   晨间简报：要我办 1. 周六上午 10 点去牙医
+办完   你说「1 办完了」（或在待办页面点一下）
+       → 记一行收件，待办马上打勾，晚上整理时正式关掉
 ```
 
 ---
 
-## 4. 快速上手 (Quick Start)
+## 开始之前要准备什么
 
-**前置依赖**：`Ubuntu 22.04+ / Debian 12+ / Linux VPS`（内存建议 ≥ 2 GB）、`Python 3.10+`、`git`、`tmux`、`systemd`，以及至少一个已登录认证的终端 AI 工具（用于后台汇总或常驻管家）。
+| 准备 | 要求 |
+| --- | --- |
+| 一台 Linux 服务器 | Ubuntu 22.04+ 或 Debian 12+，内存 2 GB 够用 |
+| 基础软件 | Python 3.10+、git、tmux（`sudo apt install -y git tmux`） |
+| 至少一个 AI 命令行工具 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code)（`claude`）或 Antigravity CLI（`agy`），装好并登录过 |
 
-### 方式一：AI 命令行一键自动安装（推荐）
+不需要装任何 Python 包。本项目只用 Python 自带的标准库。
 
-如果你已在 VPS 终端装好任意编程 Agent CLI（如 **Claude Code**、**Codex**、**DeepSeek CLI**、**Antigravity (`agy`)**、**Gemini CLI** 等），直接进入会话发送下面这段话，即可让 AI 全自动完成下载、配置、服务注册与体检：
+## 安装
+
+### 方式一：让 AI 帮你装（推荐）
+
+在服务器上打开 Claude Code 或 agy，把下面这段话发给它（尖括号里的换成你自己的）：
 
 ```text
-请帮我把 https://github.com/danielwu37/hushai-agent.git 自动安装并部署到当前这台 VPS 上，要求如下：
-1. 检查当前系统（Python 3.10+、git、tmux、systemd）以及本机已安装并登录的 AI CLI（claude / agy 等）。
-2. 将仓库克隆到 ~/hushai-agent（若已存在则拉取最新代码）。
-3. 优先尝试在独立 venv 安装或将 ~/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai（确保 PATH 可直接执行 hushai，不要破坏系统全局 Python 环境）。
-4. 使用当前机器时区、我的实际目录 ~/hushai-vault，运行 `hushai install wizard --instance my --vault ~/hushai-vault` 完成实例初始化、单元生成与端接入包渲染（根据本机实际可用的 AI CLI 自动调整 [steward] 与 [adapters]）。
-5. 核对并安装启用 ~/.config/hushai/my/units/ 下的 systemd 单元（daemon-reload 并 enable --now watch.path、heal.timer、digest.timer、weekly.timer、steward.service）。
-6. 运行 `hushai validate ~/hushai-vault`、`hushai doctor --instance my` 与 `hushai steward status --instance my`，只把真实执行的命令输出和最终使用入口汇报给我。
+请把 https://github.com/danielwu37/hushai-agent.git 安装到这台服务器：
+1. 克隆到 ~/hushai-agent，把 ~/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai，确保 PATH 里有 ~/.local/bin。
+2. 运行：hushai install wizard --instance my --vault ~/hushai-vault --timezone <我的时区，如 Asia/Shanghai> --lang zh --steward <claude 或 agy>
+   如果 claude 或 agy 不在 /usr/local/bin、~/.local/bin，把它们的绝对路径写进 ~/.config/hushai/my/config.ini 的 [adapters] 段（claude.command、agy.command）。
+3. 把向导最后打印的 systemd 命令列给我，我确认后再执行。
+4. 执行后运行 hushai doctor --instance my 和 hushai steward status --instance my，把真实输出给我看。
 ```
 
-### 方式二：手动三步部署到 VPS
+### 方式二：自己装
 
 ```bash
-# 1. 克隆仓库并配置免依赖命令行入口（也可用 venv + pip install --no-build-isolation --no-deps -e .）
+# 1. 下载，并让系统认得 hushai 命令
 git clone https://github.com/danielwu37/hushai-agent.git ~/hushai-agent
 mkdir -p ~/.local/bin && ln -sf ~/hushai-agent/bin/hushai ~/.local/bin/hushai
-hushai version
+export PATH="$HOME/.local/bin:$PATH"    # 建议也写进 ~/.bashrc
 
-# 2. 一站式向导初始化实例、记忆库与 systemd 单元（默认在 ~/hushai-vault）
+# 2. 安装向导：建好记忆文件夹 ~/hushai-vault，并生成后台服务文件
 hushai install wizard --instance my --vault ~/hushai-vault --timezone Asia/Shanghai --lang zh --steward agy
 
-# 3. 验证通过后，按向导输出启用 systemd 后台服务
-sudo cp ~/.config/hushai/my/units/hushai-my-*.* /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now hushai-my-watch.path hushai-my-heal.timer hushai-my-digest.timer hushai-my-weekly.timer hushai-my-steward.service
+# 3. 向导最后会打印三条 sudo 命令（复制服务文件、重新加载、启用），照着执行
+
+# 4. 检查
+hushai doctor --instance my
 ```
 
-> **仅本地零配置体验示例库**：`hushai validate ~/hushai-agent/examples/vault-demo`；运行离线全量单测：`PYTHONPATH=~/hushai-agent/src python3 -m unittest discover -s ~/hushai-agent/tests`。
+`--instance my` 是这一套的名字，可以随便取；后面所有命令都用同一个名字。
 
 ---
 
-## 5. 核心配置与日常使用 (Configuration & Usage)
+## 装好以后先试一试
 
-### 核心配置契约
-
-所有实例运行参数统一存储在 `~/.config/hushai/<实例名>/config.ini`（可用 `hushai --help` 查看全部子命令）。以下仅列出最关键的 5 个配置项：
-
-| 配置节与键 | 必填 | 默认值 | 说明 |
-| :--- | :--- | :--- | :--- |
-| `[instance] vault` | 是 | 无 | 记忆库绝对路径（必须在本地磁盘，勿放网盘挂载点） |
-| `[instance] timezone` | 是 | `Asia/Shanghai` | 实例所属 IANA 时区，决定每日汇总与收件归档日期 |
-| `[steward] backend` | 否 | `agy` | 常驻管家使用的模型后端（`claude` 或 `agy`） |
-| `[jobs] digest` / `weekly` | 否 | `agy:light, claude:light` | 任务模型与自动回退链 |
-| `[privacy] local_only` | 否 | `domains/health` | 永不出本机的目录，同步与模型提示词硬性跳过 |
-
-### 典型日常用法
+下面 5 条命令手动走一遍完整流程，不用等到晚上：
 
 ```bash
-# 查看或一条命令切换常驻管家模型（claude / agy）
-hushai steward status --instance my
-hushai steward use claude --instance my
+# 记一件事（平时由 AI 自动记，这里手动模拟）
+hushai inbox add --instance my --door steward --domain 生活 --did "约了周六带孩子去牙医" --todo "周六上午 10 点去牙医"
 
-# 查看今日待办 / 生成并查看晨间简报 / 启动本机待办点选页面（127.0.0.1:8765）
+# 马上整理一次（平时每晚自动跑，会调用一次 AI）
+hushai digest --instance my
+
+# 看今日待办
 hushai today --instance my
-hushai brief --instance my --md
-hushai serve --instance my --port 8765
+
+# 看晨间简报
+hushai brief --instance my
+
+# 办完了，打勾（1 是待办里的序号）
+hushai todo done 1 --instance my
 ```
 
-- 日常对话与网页操作说明：[使用者手册](./docs/user-guide.md)
-- 多实例隔离、反向代理、同步与自愈运维：[安装与维护手册](./docs/admin-guide.md)
-- 多端接入与 SSH 文本闸门协议：[多端接入指南](./docs/doors.md)
-- 系统设计规范与原理：[架构设计文档](./docs/design.md)
+## 在手机上用
+
+| 管家用的 AI | 手机上怎么找它 |
+| --- | --- |
+| Claude | 打开 Claude App → Code，找到名为「hushAi 管家」的远程会话（Remote Control） |
+| agy | 用手机上的 SSH App（如 Termius）登录服务器，运行 `tmux attach -t hushai-my` |
+
+对管家说话就像平时聊天。常用说法：
+
+- 「记一下：……」 → 写进收件
+- 「今天要办什么」 → 读今日待办
+- 「2 办完了」「3 推迟到下周一」「4 不做了」 → 回写待办
+- 「批准候选记忆 C-xxxx」 → 让它记住一条关于你的新信息
+
+## 常用命令
+
+| 想做什么 | 命令 |
+| --- | --- |
+| 看今日待办 | `hushai today --instance my` |
+| 打勾、推迟、放弃 | `hushai todo done 1` / `todo defer 1 --to 2026-12-01` / `todo drop 1`（都加 `--instance my`） |
+| 看晨间简报 | `hushai brief --instance my` |
+| 看管家状态 | `hushai steward status --instance my` |
+| 管家换成 Claude 或 agy | `hushai steward use claude --instance my` |
+| 手动自检一次 | `hushai heal --instance my` |
+| 全面体检 | `hushai doctor --instance my` |
+| 打开本机待办网页 | `hushai serve --instance my --port 8765`（只监听本机，见[使用者手册](./docs/user-guide.md)） |
+| 导出全部数据 | `hushai export --instance my --out ~/hushai-backup.tar.gz` |
+
+所有命令：`hushai --help`。
+
+## 你的数据放在哪
+
+```text
+~/hushai-vault/              ← 记忆文件夹，全是文本文件，可以直接打开看
+├── hub/
+│   ├── inbox/               ← 收件：每台设备每天一个文件，只追加不改
+│   ├── today.md             ← 今日待办
+│   ├── open-items.md        ← 所有没办完的事
+│   ├── status.md            ← 各项目近况
+│   ├── profile.md           ← 关于你的画像（你批准过才会写进来）
+│   ├── decisions.md         ← 你拍过板的决定
+│   ├── lessons.md           ← 出过的问题和教训
+│   └── reports/             ← 日报、周报
+└── domains/                 ← 按领域放的资料；health 默认「仅本机」
+~/.config/hushai/my/         ← 配置（config.ini）和生成的服务文件
+~/.local/state/hushai/my/    ← 运行记录（每次任务调了哪家 AI、花了多久）
+```
+
+记忆文件夹本身是一个 git 仓库，每次整理后自动提交，改错了可以回滚。
+
+## 后台会自动做的事
+
+| 什么时候 | 做什么 |
+| --- | --- |
+| 收件一有变化 | 立刻处理「办完、推迟、放弃」这类不需要 AI 判断的动作 |
+| 每晚（默认 21:30） | 用 AI 整理当天收件，生成明天的待办和日报 |
+| 每周日晚 | 重写各项目近况，列出过期没动、办了没销、互相矛盾的事 |
+| 每小时 | 静默自检，能修的自己修 |
+| 一直 | 管家会话在线，掉线自动拉起 |
 
 ---
 
-## 6. 功能更新与演进路线 (Roadmap & Updates)
+## 目前的限制（v0.1，请先看）
 
-### 演进路线 (Roadmap)
-- [x] **Phase 1 — 核心记忆引擎**：纯文本规范、路径护栏、机械与模型双阶段汇总、7 天离线回放验证
-- [x] **Phase 2 — 多端闭环与运维自愈**：SSH 闸门、跨端路由、晨间简报、一键安装向导与 8 项静默自愈（含额度接手）
-- [ ] **Phase 3 — 生态扩展**：更多内置模型 CLI 适配模板与开箱即用的轻量端同步方案
+- **建议用 root 安装。** 用普通用户装，服务能正常跑，但「自己修」需要重启服务，没有权限，会改成在待办顶上提醒你。用户级服务的支持在计划中。
+- **Claude 管家会读到这台服务器上 Claude 的全局设置。** 远程会话模式不支持隔离参数，`~/.claude/CLAUDE.md` 里的全局规则会和管家规则混在一起。服务器专门给管家用就不受影响。
+- **「Claude 额度用完自动换 agy」还没有用真实的额度报错验证过。** 手动切换（`hushai steward use agy`）是可靠的。
+- **agy 管家在手机上**目前只验证过 SSH 方式。
+- 修复记录见 [CHANGELOG.md](./CHANGELOG.md)。
 
-### 功能更新记录 (Changelog)
-本项目的版本迭代、功能新增与修复记录均随发布自动聚合，不在 README 中手工堆砌：
-- 查看每个版本的详细发布说明：[GitHub Releases](https://github.com/danielwu37/hushai-agent/releases)
-- 查看历史变更摘要：[CHANGELOG.md](./CHANGELOG.md)
+## 更多文档
 
----
+- [使用者手册](./docs/user-guide.md)：日常怎么用、待办网页
+- [安装与维护手册](./docs/admin-guide.md)：多实例、同步、自愈、升级与卸载
+- [多端接入](./docs/doors.md)：让其他设备、其他 AI 读写同一份记忆
+- [设计文档](./docs/design.md)、[文件格式规范](./docs/spec.md)
+- 只想先看看样子：`hushai validate ~/hushai-agent/examples/vault-demo`，里面是虚构人物的示例数据
 
-## 7. 贡献与开源协议 (Contributing & License)
+## 参与与协议
 
-欢迎提交 Issue 或 Pull Request！提交代码前请先在本地跑通 `unittest`，并遵循 `feat:` / `fix:` / `docs:` 语义化提交规范，以便配合 GitHub Releases 自动生成更新说明。
+欢迎提 Issue 和 PR。提交前请跑通测试：`PYTHONPATH=src python3 -m unittest discover -s tests -t .`
 
-本项目基于 [MIT License](./LICENSE) 开源。
+[MIT License](./LICENSE)
