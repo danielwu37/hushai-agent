@@ -82,6 +82,14 @@ hushai validate examples/vault-demo
 - `hushai candidate list|approve|discard`：候选记忆有编号（`C-YYMMDD-N`），批准后原文追加到 `profile.md` 或 `AGENTS.local.md`；只有 `[approval] doors` 里的端能批。
 - `hushai todo accept TARGET`：等我拍板的事带推荐时，一步按推荐确认。
 
+### 8. 安装向导、端接入包、同步与生命周期管理（M3d）
+
+- `hushai install wizard --instance demo --vault /path/to/vault`：一站式初始化、写入双适配项与回退链配置、生成 systemd 单元与端接入包并执行体检。
+- `hushai install doorkit --instance demo --out DIR`：生成 `claude`（采用 `--setting-sources project,local --settings` 同账号零冲突隔离）与 `agy` 的端接入配置和启动脚本。
+- `hushai sync --instance demo [--direction push|pull|both] [--dry-run]`：按文件归属调 `rclone copy` 单向同步（不碰挂载点），拉取后立即触发事件对账。
+- `hushai export` / `hushai upgrade` / `hushai uninstall`：完整导出备份（排除令牌凭据与 `.git`）、更新框架托管模板、安全卸载实例。
+- 两本手册：`docs/user-guide.md`（《使用者手册》）与 `docs/admin-guide.md`（《安装与维护手册》）。
+
 ## 仓库目录说明
 
 ```text
@@ -91,13 +99,16 @@ README.md                 项目简介与快速上手
 docs/spec.md              hushAi-agent 核心规范文档
 docs/design.md            hushAi-agent 架构设计文档
 docs/doors.md             各端接入说明（闸门、强制命令、回写写法）
+docs/user-guide.md        日常使用者手册
+docs/admin-guide.md       安装与维护手册
 src/hushai_agent/         核心源码包（标准库实现）
   cli.py                  命令行参数解析与主分发
   cli_loop.py             M2 闭环子命令（today/todo/ledger/digest/weekly/reconcile）
   cli_m3.py               M3 子命令（adapter test / dispatch）
-  cli_m3b.py              M3b 子命令（gate / on-event / install units）
+  cli_m3b.py              M3b 子命令（gate / on-event / install units|doorkit|wizard）
   cli_m3c.py              M3c 子命令（candidate / brief / serve）
-  config_ext.py           M3 可选配置节（gate / routing / approval / candidates_pending）
+  cli_m3d.py              M3d 子命令（sync / export / upgrade / uninstall）
+  config_ext.py           M3 可选配置节（gate / routing / approval / sync / candidates_pending）
   config.py               实例配置读写与校验
   config_loop.py          回退链、适配项、预算与调度配置解析
   paths.py                配置根、状态根与模板路径解析
@@ -118,6 +129,10 @@ src/hushai_agent/         核心源码包（标准库实现）
   on_event.py             事件处理：即时机械对账加跨端路由
   routing.py              跨端路由（只用问答式）
   install.py              服务单元模板渲染
+  doorkit.py              端接入包生成与一站式安装向导
+  sync.py                 按文件归属单向同步（rclone copy）
+  lifecycle.py            导出备份、模板升级与实例卸载
+  ppc.py                  更正驱动规则微调（Propose-Probe-Compose）
   candidates.py           候选记忆：编号、上限、批准、丢弃
   brief.py / brief_html.py  晨间简报数据、Markdown 与页面
   serve.py                待办页面（127.0.0.1、令牌、点选回写）

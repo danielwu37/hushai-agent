@@ -7,8 +7,8 @@ import json
 import sys
 from typing import Any
 
-from hushai_agent import gate, install, on_event
-from hushai_agent.config import load_instance_config
+from hushai_agent import doorkit, gate, install, on_event
+from hushai_agent.config import DEFAULT_LANG, DEFAULT_TIMEZONE, load_instance_config
 
 GATE_SUBS = ("append-inbox", "put-exchange", "check-inbox", "ssh")
 
@@ -27,13 +27,26 @@ def register_m3b_commands(subparsers: Any) -> None:
     p_event.add_argument("--instance", required=True, help="实例名称")
     p_event.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
-    p_inst = subparsers.add_parser("install", help="生成服务单元模板（不安装、不启用）")
-    p_inst.add_argument("install_command", choices=("units",))
+    p_inst = subparsers.add_parser("install", help="生成服务单元、端接入包或运行一站式安装向导")
+    p_inst.add_argument("install_command", choices=("units", "doorkit", "wizard"))
     p_inst.add_argument("--instance", required=True, help="实例名称")
-    p_inst.add_argument("--out", required=True, help="输出目录（必须已存在）")
+    p_inst.add_argument("--out", default=None, help="units/doorkit：输出目录（必须已存在）")
     p_inst.add_argument("--digest-time", default=install.DEFAULT_DIGEST_TIME, help="每日汇总时间 HH:MM")
     p_inst.add_argument("--memory-max", default=install.DEFAULT_MEMORY_MAX, help="内存上限，如 256M")
     p_inst.add_argument("--port", type=int, default=install.DEFAULT_PORT, help="待办页面端口")
+    p_inst.add_argument("--adapter", choices=("claude", "agy", "all"), default="all", help="doorkit：适配项")
+    p_inst.add_argument("--door", default=None, help="doorkit：端编号（默认管家端）")
+    p_inst.add_argument("--vault", default=None, help="wizard：vault 目录路径")
+    p_inst.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="wizard：实例时区")
+    p_inst.add_argument("--lang", choices=("zh", "en"), default=DEFAULT_LANG, help="wizard：默认语言")
+    p_inst.add_argument("--steward", choices=("claude", "agy"), default="claude", help="wizard：管家适配项")
+    p_inst.add_argument("--agy-light", default="gemini-3.8-flash-low", help="wizard：agy 轻档模型")
+    p_inst.add_argument("--agy-heavy", default="gemini-4-argon-high", help="wizard：agy 重档模型")
+    p_inst.add_argument("--claude-light", default="haiku", help="wizard：claude 轻档模型")
+    p_inst.add_argument("--claude-heavy", default="sonnet", help="wizard：claude 重档模型")
+    p_inst.add_argument("--remote", default="", help="wizard：rclone 远端路径（可空）")
+    p_inst.add_argument("--no-git", action="store_true", help="wizard：不在 vault 中执行 git init")
+    p_inst.add_argument("--json", action="store_true", help="wizard：以 JSON 格式输出结果")
 
 
 def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
@@ -62,7 +75,40 @@ def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
         return 0
 
     if args.command == "install":
+        if args.install_command == "wizard":
+            if not args.vault:
+                raise ValueError("install wizard 需要 --vault")
+            res = doorkit.run_wizard(
+                instance=args.instance,
+                vault=args.vault,
+                timezone=args.timezone,
+                lang=args.lang,
+                steward=args.steward,
+                agy_light=args.agy_light,
+                agy_heavy=args.agy_heavy,
+                claude_light=args.claude_light,
+                claude_heavy=args.claude_heavy,
+                remote=args.remote,
+                no_git=args.no_git,
+            )
+            if args.json:
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+            else:
+                print(f"实例 {args.instance} 已就绪（vault: {res['vault']}）")
+                print(f"单元目录: {res['units_dir']}（{len(res['units'])} 个文件）")
+                print(f"端接入包: {res['doorkit_dir']}（{len(res['doorkit'])} 个文件）")
+                print(f"体检结果: {'OK' if res['ok'] else 'FAIL'}")
+                print("\n".join(res["next_steps"]))
+            return 0 if res["ok"] else 1
+
+        if not args.out:
+            raise ValueError(f"install {args.install_command} 需要 --out")
         cfg = load_instance_config(args.instance)
+        if args.install_command == "doorkit":
+            written = doorkit.render_doorkit(cfg, args.out, args.adapter, args.door)
+            for path in written:
+                print(f"已生成: {path}")
+            return 0
         written = install.render_units(cfg, args.out, args.digest_time, args.memory_max, args.port)
         for path in written:
             print(f"已生成: {path}")

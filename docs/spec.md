@@ -330,9 +330,14 @@ doors = steward,web
 
 [limits]
 candidates_pending = 20
+
+[sync]
+tool = rclone
+remote =
+timeout = 60
 ```
 
-`[routing]` 里除 `enabled`、`trusted_doors`、`max_daily` 外的键都是目标名，值是回退链；值为空表示该目标不接受路由。配置值后面不要写行内注释。
+`[routing]` 里除 `enabled`、`trusted_doors`、`max_daily` 外的键都是目标名，值是回退链；值为空表示该目标不接受路由。配置值后面不要写行内注释。`[sync]` 配置单向同步命令（默认 `rclone`）、远端根路径与超时秒数。
 
 ### 7.6 状态目录新增文件
 

@@ -303,6 +303,10 @@ remote = <远端名:路径>
 
 **待办页面的边界。** 只监听本机回环地址，对外暴露由安装者自己的反向代理决定；凭令牌换 cookie；写操作要求自定义请求头以防跨站请求；页面自包含，不引用外部资源。
 
+**同账号零冲突端接入包与向导（M3d）。** `hushai install doorkit` 为 `claude` 生成 `claude-settings.json` 与 `start-claude-steward.sh`（使用 `claude --setting-sources project,local --settings <配置>` 启动，跳过用户级 `~/.claude` 全局规则与钩子，同时共用同一 OAuth 登录凭据，零踢下线风险），为 `agy` 生成 `agy-hooks.json`。`hushai install wizard` 一站式完成初始化、双适配项回退链配置、单元与接入包渲染及 `doctor` 自检。
+
+**更正驱动规则微调（Propose–Probe–Compose）。** `weekly` 扫描本周人工 `correction` 记录（无更正绝不触发），生成单行防错规则并在无锁状态下做回放校验（Probe），通过后作为带 `（已回放验证）` 标记的 `convention` 候选写入 `candidates.md`，呈批至晨间简报。
+
 ## 14. 未决取舍
 
 | 事项 | 现在的倾向 | 等什么 |

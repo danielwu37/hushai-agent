@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from hushai_agent import cursor, items, ledger, lock, runner, statusfile
+from hushai_agent import cursor, items, ledger, lock, ppc, runner, statusfile
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.digest_apply import commit_hub_if_git
 from hushai_agent.fsio import atomic_write, read_for_prompt
@@ -147,6 +147,7 @@ def run_weekly(
             atomic_write(target_hub / "insights.md", render_insights(model_data["insights"]), roots)
 
         atomic_write(target_hub / "reports" / f"weekly-{as_of_str}.md", weekly_text, roots)
+        ppc_res = ppc.propose_probe_compose(inst_cfg, as_of_date, dry_run=dry_run)
         git_committed = False if dry_run else commit_hub_if_git(inst_cfg.vault, f"weekly {as_of_str}")
 
         note = f"degraded={degraded}" if degraded else (f"dropped={len(dropped_list)}" if dropped_list else "")
@@ -169,6 +170,8 @@ def run_weekly(
             "contradictions_count": len(model_data["contradictions"]) if model_data else 0,
             "dropped": len(dropped_list),
             "degraded": degraded,
+            "ppc_proposed": ppc_res["proposed"],
+            "ppc_verified": ppc_res["verified"],
             "git_committed": git_committed,
         }
     except Exception as exc:

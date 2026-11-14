@@ -16,6 +16,8 @@ DEFAULT_EXCHANGE_EXT = ("md", "txt", "json", "csv", "html", "pdf", "png", "jpg")
 DEFAULT_EXCHANGE_MAX_KB = 5120
 DEFAULT_ROUTING_MAX_DAILY = 10
 DEFAULT_CANDIDATES_PENDING = 20
+DEFAULT_SYNC_TOOL = "rclone"
+DEFAULT_SYNC_TIMEOUT = 60
 ROUTING_RESERVED = frozenset({"enabled", "trusted_doors", "max_daily"})
 
 
@@ -31,6 +33,9 @@ class ExtConfig:
     routing_chains: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
     approval_doors: tuple[str, ...] = ()
     candidates_pending: int = DEFAULT_CANDIDATES_PENDING
+    sync_tool: str = DEFAULT_SYNC_TOOL
+    sync_remote: str = ""
+    sync_timeout: int = DEFAULT_SYNC_TIMEOUT
 
 
 def _csv(raw: str) -> tuple[str, ...]:
@@ -77,6 +82,10 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
     if not approval:
         approval = tuple(dict.fromkeys((cfg.steward_door, "web")))
 
+    sync_tool = parser.get("sync", "tool", fallback="").strip() or DEFAULT_SYNC_TOOL
+    sync_remote = parser.get("sync", "remote", fallback="").strip()
+    sync_timeout = _int(parser, "sync", "timeout", DEFAULT_SYNC_TIMEOUT) or DEFAULT_SYNC_TIMEOUT
+
     return ExtConfig(
         exchange_ext=exchange_ext,
         exchange_max_kb=_int(parser, "gate", "exchange_max_kb", DEFAULT_EXCHANGE_MAX_KB),
@@ -86,4 +95,7 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
         routing_chains=chains,
         approval_doors=approval,
         candidates_pending=_int(parser, "limits", "candidates_pending", DEFAULT_CANDIDATES_PENDING),
+        sync_tool=sync_tool,
+        sync_remote=sync_remote,
+        sync_timeout=sync_timeout,
     )
