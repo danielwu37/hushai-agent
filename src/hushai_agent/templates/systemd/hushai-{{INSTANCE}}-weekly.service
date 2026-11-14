@@ -5,6 +5,7 @@ Description=hushAi-agent {{INSTANCE}}: weekly rewrite
 Type=oneshot
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
+ExecStartPre=-{{HUSHAI}} heal --instance {{INSTANCE}} --before weekly
 ExecStart={{HUSHAI}} weekly --instance {{INSTANCE}}
 Nice=10
 MemoryMax={{MEMORY_MAX}}

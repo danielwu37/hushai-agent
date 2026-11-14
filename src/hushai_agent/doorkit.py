@@ -46,8 +46,12 @@ def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd
                     "hooks": [
                         {
                             "type": "command",
+                            "command": f"{hushai_cmd} capture --instance {cfg.name} --door {door}",
+                        },
+                        {
+                            "type": "command",
                             "command": f"{hushai_cmd} reconcile --instance {cfg.name}",
-                        }
+                        },
                     ],
                 }
             ],

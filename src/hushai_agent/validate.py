@@ -34,6 +34,8 @@ REQUIRED_FILES = (
     "hub/open-items.md",
     "hub/today.md",
     "hub/insights.md",
+    "hub/decisions.md",
+    "hub/lessons.md",
 )
 
 PAREN_COPY_RE = re.compile(r"^(?P<stem>.+) \(\d+\)(?P<ext>\.[^.]+)?$")
@@ -92,11 +94,7 @@ def is_sync_conflict_filename(
 def check_vault_structure(vault_path: Path) -> CheckItem:
     """检查 vault 目录结构与必需文件是否齐全。"""
     if not vault_path.exists() or not vault_path.is_dir():
-        return CheckItem(
-            id="vault-structure",
-            level="FAIL",
-            message=f"vault 目录不存在: {vault_path}",
-        )
+        return CheckItem(id="vault-structure", level="FAIL", message=f"vault 目录不存在: {vault_path}")
 
     missing: list[str] = []
     for rel_dir in REQUIRED_DIRS:
@@ -111,16 +109,11 @@ def check_vault_structure(vault_path: Path) -> CheckItem:
     if domains_dir.is_dir():
         for child in sorted(domains_dir.iterdir()):
             if child.is_dir() and not child.name.startswith("."):
-                domain_agents = child / "AGENTS.md"
-                if not domain_agents.is_file():
+                if not (child / "AGENTS.md").is_file():
                     missing.append(f"domains/{child.name}/AGENTS.md")
 
     if missing:
-        return CheckItem(
-            id="vault-structure",
-            level="FAIL",
-            message=f"缺失必需目录或文件: {', '.join(missing)}",
-        )
+        return CheckItem(id="vault-structure", level="FAIL", message=f"缺失必需目录或文件: {', '.join(missing)}")
     return CheckItem(id="vault-structure", level="OK", message="目录与必需文件齐全")
 
 
@@ -128,11 +121,7 @@ def check_inbox_names(vault_path: Path) -> CheckItem:
     """检查 hub/inbox/ 下所有收件文件名是否合法。"""
     inbox_dir = vault_path / "hub" / "inbox"
     if not inbox_dir.is_dir():
-        return CheckItem(
-            id="inbox-names",
-            level="FAIL",
-            message="hub/inbox 目录不存在",
-        )
+        return CheckItem(id="inbox-names", level="FAIL", message="hub/inbox 目录不存在")
 
     invalid: list[str] = []
     for entry in sorted(inbox_dir.iterdir()):
@@ -147,11 +136,7 @@ def check_inbox_names(vault_path: Path) -> CheckItem:
             invalid.append(f"{entry.name} ({exc})")
 
     if invalid:
-        return CheckItem(
-            id="inbox-names",
-            level="FAIL",
-            message=f"非法收件文件名: {'; '.join(invalid)}",
-        )
+        return CheckItem(id="inbox-names", level="FAIL", message=f"非法收件文件名: {'; '.join(invalid)}")
     return CheckItem(id="inbox-names", level="OK", message="所有收件文件名合法")
 
 
@@ -228,20 +213,11 @@ def check_open_items(vault_path: Path) -> CheckItem:
     """检查 hub/open-items.md 中以 '- [' 开头的行是否均符合开放项格式。"""
     open_items_file = vault_path / "hub" / "open-items.md"
     if not open_items_file.is_file():
-        return CheckItem(
-            id="open-items",
-            level="FAIL",
-            message="hub/open-items.md 不存在",
-        )
-
+        return CheckItem(id="open-items", level="FAIL", message="hub/open-items.md 不存在")
     try:
         lines = open_items_file.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
-        return CheckItem(
-            id="open-items",
-            level="FAIL",
-            message=f"open-items.md 无法读取 ({exc})",
-        )
+        return CheckItem(id="open-items", level="FAIL", message=f"open-items.md 无法读取 ({exc})")
 
     errors: list[str] = []
     for lineno, line in enumerate(lines, start=1):
@@ -254,11 +230,7 @@ def check_open_items(vault_path: Path) -> CheckItem:
             errors.append(f"open-items.md:{lineno}: {exc}")
 
     if errors:
-        return CheckItem(
-            id="open-items",
-            level="FAIL",
-            message=f"open-items.md 格式错误: {'; '.join(errors)}",
-        )
+        return CheckItem(id="open-items", level="FAIL", message=f"open-items.md 格式错误: {'; '.join(errors)}")
     return CheckItem(id="open-items", level="OK", message="open-items.md 格式合法")
 
 
@@ -272,6 +244,26 @@ def check_candidates(vault_path: Path) -> CheckItem:
     return CheckItem(id="candidates", level="OK", message="candidates.md 格式合法")
 
 
+def check_decisions(vault_path: Path) -> CheckItem:
+    """检查 hub/decisions.md 的行格式是否合法。"""
+    from hushai_agent.cortex import check_decisions_errors
+
+    bad = check_decisions_errors(vault_path)
+    if bad:
+        return CheckItem(id="decisions", level="FAIL", message=f"decisions.md 格式错误: {'; '.join(bad[:3])}")
+    return CheckItem(id="decisions", level="OK", message="decisions.md 格式合法")
+
+
+def check_lessons(vault_path: Path) -> CheckItem:
+    """检查 hub/lessons.md 的行格式是否合法。"""
+    from hushai_agent.cortex import check_lessons_errors
+
+    bad = check_lessons_errors(vault_path)
+    if bad:
+        return CheckItem(id="lessons", level="FAIL", message=f"lessons.md 格式错误: {'; '.join(bad[:3])}")
+    return CheckItem(id="lessons", level="OK", message="lessons.md 格式合法")
+
+
 def validate_vault(vault_path: str | Path) -> dict[str, Any]:
     """对指定 vault 路径执行无配置规范校验。"""
     vpath = Path(vault_path).expanduser().resolve()
@@ -281,6 +273,8 @@ def validate_vault(vault_path: str | Path) -> dict[str, Any]:
         check_inbox_lines(vpath, allowed_domains=None),
         check_open_items(vpath),
         check_candidates(vpath),
+        check_decisions(vpath),
+        check_lessons(vpath),
         check_sync_conflicts(vpath),
     ]
     ok = all(item.level != "FAIL" for item in checks)

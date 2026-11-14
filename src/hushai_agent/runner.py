@@ -2,14 +2,49 @@
 
 from __future__ import annotations
 
+import datetime
+import json
 import time
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
-from hushai_agent import adapters, ledger
+from hushai_agent import adapters, clock, ledger
 from hushai_agent.adapters.base import Result
-from hushai_agent.config import InstanceConfig, parse_fallback_chain
+from hushai_agent.config import DEFAULT_TIMEZONE, InstanceConfig, parse_fallback_chain
+from hushai_agent.paths import get_instance_state_dir
 
 ValidateFn = Callable[[dict[str, Any] | None], tuple[dict[str, Any] | None, str | None]]
+
+
+def _is_adapter_skipped(cfg: InstanceConfig, adapter_name: str) -> str | None:
+    """检查 <状态目录>/adapter-skip.json 中该适配项是否处于未过期的跳过窗口内，未过期返回到期时间字符串。"""
+    try:
+        skip_file = get_instance_state_dir(cfg.name) / "adapter-skip.json"
+    except Exception:
+        return None
+    if not skip_file.is_file():
+        return None
+    try:
+        data = json.loads(skip_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get(adapter_name)
+    until_str = raw.get("until", "") if isinstance(raw, dict) else (raw if isinstance(raw, str) else "")
+    if not until_str or not str(until_str).strip():
+        return None
+    text = str(until_str).strip()
+    norm = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        until_dt = datetime.datetime.fromisoformat(norm)
+    except ValueError:
+        return None
+    tz = ZoneInfo(getattr(cfg, "timezone", DEFAULT_TIMEZONE))
+    until_dt = until_dt.replace(tzinfo=tz) if until_dt.tzinfo is None else until_dt.astimezone(tz)
+    if clock.now(cfg) < until_dt:
+        return until_dt.isoformat()
+    return None
 
 
 def _get_job_chain(cfg: InstanceConfig, job: str) -> list[tuple[str, str]]:
@@ -66,6 +101,11 @@ def run_model(
     last_model = ""
 
     for adapter_name, tier in chain:
+        skip_until = _is_adapter_skipped(cfg, adapter_name)
+        if skip_until is not None:
+            errors.append(f"{adapter_name}:{tier}: skipped until {skip_until}")
+            continue
+
         last_adapter = adapter_name
         last_tier = tier
 

@@ -9,6 +9,7 @@ from hushai_agent import (
     candidates,
     clock,
     collect,
+    cortex,
     cursor,
     items,
     ledger,
@@ -67,6 +68,7 @@ def run_mechanical_only(cfg: InstanceConfig | str) -> dict[str, Any]:
         vault = inst_cfg.vault
         ext = load_ext(inst_cfg)
         candidates.apply_mech(inst_cfg, mech, ext.approval_doors)
+        cortex.apply_mech(inst_cfg, mech, write=True)
         items.save(inst_cfg, all_items, as_of_date)
 
         cand_lines, corr_lines = build_candidate_and_correction_lines(

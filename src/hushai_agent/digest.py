@@ -6,7 +6,7 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    brief, candidates, collect, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    brief, candidates, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
@@ -64,6 +64,7 @@ def run_digest(
         mech = mechanical.apply_actions(all_items, records)
         ext = load_ext(inst_cfg)
         candidates.apply_mech(inst_cfg, mech, ext.approval_doors, write=not dry_run)
+        cortex.apply_mech(inst_cfg, mech, write=not dry_run)
 
         by_door: dict[str, int] = {}
         for rec in records:

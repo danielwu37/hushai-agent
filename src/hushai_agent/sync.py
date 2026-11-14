@@ -19,6 +19,8 @@ PUSH_INCLUDES = (
     "/open-items.md",
     "/today.md",
     "/insights.md",
+    "/decisions.md",
+    "/lessons.md",
     "/reports/**",
     "/exchange/out/**",
 )

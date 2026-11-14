@@ -33,6 +33,8 @@ APPROVE_RE = re.compile(
     r"^(?:批准\s*|approve\s+)(?P<id>C-\d{6}-\d+)\s*(?P<to>画像|规则|profile|rules)$", re.IGNORECASE
 )
 DISCARD_RE = re.compile(r"^(?:丢弃\s*|discard\s+)(?P<id>C-\d{6}-\d+)(?:[\s：:].*)?$", re.IGNORECASE)
+DECISION_RE = re.compile(r"^(?:决定\s*[：:]\s*|decision\s*:\s*)(?P<note>.+)$", re.IGNORECASE)
+LESSON_RE = re.compile(r"^(?:教训\s*[：:]\s*|lesson\s*:\s*)(?P<note>.+)$", re.IGNORECASE)
 
 CORRECTION_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[1], RESERVED_DOMAINS_EN[1]})
 MEMORY_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[0], RESERVED_DOMAINS_EN[0]})
@@ -42,7 +44,7 @@ MEMORY_DOMAINS = frozenset({RESERVED_DOMAINS_ZH[0], RESERVED_DOMAINS_EN[0]})
 class Action:
     """解析出的单条机械对账动作。"""
 
-    kind: str  # "done" | "defer" | "drop" | "correct" | "approve" | "discard"（后两个针对候选记忆）
+    kind: str  # "done" | "defer" | "drop" | "correct" | "approve" | "discard" | "decision" | "lesson"
     target: str
     date: FlexDate | None = None
     note: str = ""
@@ -150,30 +152,23 @@ class Outcome:
     mechanical_ids: set[str] = field(default_factory=_IdSet)
     rest: list[InboxRecord] = field(default_factory=_RecordList)
     cand_actions: list[tuple[Action, InboxRecord]] = field(default_factory=list)
+    cortex_actions: list[tuple[Action, InboxRecord]] = field(default_factory=list)
     items: list[OpenItem] = field(default_factory=list)
 
 
 def parse_action(did: str) -> Action | None:
-    """识别‘做了什么’开头的机械动作（完成/推迟/放弃/更正）；非机械动作或非法推迟返回 None。"""
+    """识别‘做了什么’开头的机械动作（完成/推迟/放弃/更正/批准/丢弃/决定/教训）；非机械动作返回 None。"""
     if not did or not did.strip():
         return None
     text = did.strip()
 
     m_done = DONE_RE.match(text)
     if m_done:
-        return Action(
-            kind="done",
-            target=m_done.group("id"),
-            note=(m_done.group("note") or "").strip(),
-        )
+        return Action(kind="done", target=m_done.group("id"), note=(m_done.group("note") or "").strip())
 
     m_drop = DROP_RE.match(text)
     if m_drop:
-        return Action(
-            kind="drop",
-            target=m_drop.group("id"),
-            note=(m_drop.group("note") or "").strip(),
-        )
+        return Action(kind="drop", target=m_drop.group("id"), note=(m_drop.group("note") or "").strip())
 
     m_defer = DEFER_RE.match(text)
     if m_defer:
@@ -197,16 +192,19 @@ def parse_action(did: str) -> Action | None:
     if m_disc:
         return Action(kind="discard", target=m_disc.group("id").upper())
 
+    m_dec = DECISION_RE.match(text)
+    if m_dec and m_dec.group("note").strip():
+        return Action(kind="decision", target="decision", note=m_dec.group("note").strip())
+    m_les = LESSON_RE.match(text)
+    if m_les and m_les.group("note").strip():
+        return Action(kind="lesson", target="lesson", note=m_les.group("note").strip())
+
     m_corr = CORRECT_RE.match(text)
     if m_corr:
         note = (m_corr.group("note") or "").strip()
         if not note:
             return None
-        return Action(
-            kind="correct",
-            target=m_corr.group("target"),
-            note=note,
-        )
+        return Action(kind="correct", target=m_corr.group("target"), note=note)
 
     return None
 
@@ -228,6 +226,9 @@ def apply_actions(
                 continue
             if act.kind in ("approve", "discard"):
                 outcome.cand_actions.append((act, rec))
+                continue
+            if act.kind in ("decision", "lesson"):
+                outcome.cortex_actions.append((act, rec))
                 continue
 
             entry = AppliedEntry(

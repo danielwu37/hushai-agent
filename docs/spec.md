@@ -31,6 +31,8 @@
     open-items.md
     today.md
     insights.md
+    decisions.md
+    lessons.md
     inbox/
     reports/
     exchange/
@@ -43,7 +45,7 @@
 ```
 
 - 顶层 `.gitignore` 由模板提供，默认忽略临时文件、系统垃圾文件与编辑器缓存（`.*.tmp`、`.DS_Store`、`Thumbs.db`、`desktop.ini`、`.claude/`、`.agents/`、`~$*`）。
-- `hub/` 下上述 8 个 Markdown 文件及 `inbox/`、`reports/`、`exchange/in/`、`exchange/out/` 目录为必需项。
+- `hub/` 下上述 10 个 Markdown 文件及 `inbox/`、`reports/`、`exchange/in/`、`exchange/out/` 目录为必需项。
 - `domains/` 目录为必需项；其下每创建一个领域子目录 `<name>/`，该子目录内必须包含 `AGENTS.md`。
 
 ---
@@ -262,6 +264,8 @@ max_daily_calls = 20
 | `hushai ledger --instance NAME [--limit N] [--json]` | 查看运行账本记录 |
 | `hushai adapter test NAME --instance X [--tier light\|heavy] [--json]` | 用极小提示词与结构（`{"ok": true}`）自检问答式适配项，记 `call` 账本行并受每日预算限制 |
 | `hushai dispatch --instance X --name JOB (--task FILE \| --goal TEXT [--domain D]) [--adapter NAME] [--tier heavy] [--workdir DIR] [--timeout SEC] [--json]` | 在隔离工作目录执行代理式派活（默认 `<状态目录>/jobs/<任务名>/work/`，禁止位于 vault 内）；中断带会话号时自动续跑一次，记账并保存 `out.json` |
+| `hushai heal --instance X [--before digest\|weekly] [--dry-run] [--json]` | 静默自愈健康检查：执行 7 项白名单确定性自检与恢复，正常只记账本，自愈写 `<日期>-heal.md` 一行，2 次失败写 `today.md` 顶部告警（24 小时去重） |
+| `hushai capture --instance X [--door ID] [--json]` | 从钩子标准输入读取会话 JSONL，纯机械取最后一条人类消息前 80 字写入 `<日期>-<door>-auto.md`（同 `session_id` 10 分钟内最多一行） |
 
 ### Doctor 检查项清单
 
@@ -279,7 +283,7 @@ JSON 输出格式为：`{"checks": [{"id": "...", "level": "OK|WARN|FAIL", "mess
 10. `ledger-recent`：账本首行距今（按 `clock`）已满 3 天，且最近 3 天没有 `job == "digest"`、`result ∈ {ok, degraded}` 的行时报 `WARN`（定时任务可能未生效）；账本为空或首行不满 3 天报 `OK`。
 11. `inbox-backlog`：存在文件日期早于今天减 2 天（按 `clock`）、且不在游标 `digested.jsonl` 中的合法收件行时报 `WARN` 并列出条数。
 
-`validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`sync-conflicts`。
+`validate` 执行其中不依赖实例配置的部分：`vault-structure`、`inbox-names`、`inbox-lines`、`open-items`、`candidates`、`decisions`、`lessons`、`sync-conflicts`。
 
 ## 7. M3 新增规范
 
@@ -357,3 +361,30 @@ timeout = 60
 ```
 
 成功返回新的简报 JSON（附 `_html`，页面用它局部重画）；参数不合法 400，目标不存在或已处理 409，其他路径 404，其他方法 405。
+
+### 7.8 决定（`hub/decisions.md`）与教训（`hub/lessons.md`）
+
+- **`hub/decisions.md`**：只追加，每条占一行，以全角竖线 `｜` 分为 5 段：
+  ```text
+  - YYYY-MM-DD｜<决定>｜<理由>｜<批准人>｜<来源收件行编号>
+  ```
+- **`hub/lessons.md`**：只追加，每条占一行，以全角竖线 `｜` 分为 4 段：
+  ```text
+  - YYYY-MM-DD｜<现象>｜<根因>｜<防线>
+  ```
+- **机械对账**：识别收件行「做了什么」开头的 `决定：…`（或 `decision: ...`）与 `教训：…`（或 `lesson: ...`），按收件行编号（`line_id`）幂等去重追加到对应文件，并在 `<状态目录>/cortex-ids.json` 记录已处理编号。`validate` 与 `doctor` 均校验这两个文件的存在与行格式。
+
+### 7.9 静默自愈健康检查（`hushai heal`）与会话自动记录（`hushai capture`）
+
+- **`hushai heal`**：
+  - 检查项注册表（`heal.CHECKS`）：`vault_rw`（10 秒子进程探针写读删 `.heal-probe`）、`state_and_disk`（状态目录可写且剩余空间 ≥ 500 MB）、`timers_on_time`（`digest` > 26h / `weekly` > 8d 漏跑补跑与 `failed` 单元复位重启）、`watch_alive`（`hushai-<实例>-watch.path` 非 `active` 时复位启动）、`memory_write`（超 2 天未对账收件补跑 `reconcile`，钩子缺失重装 `doorkit`）、`model_available`（不调模型，统计近 24h 账本，回退链首家连续 3 次失败则写 `<状态目录>/adapter-skip.json` 让调用器 6 小时内跳过首家直走下一家，到期自动恢复）、`sync_ok`（配了 `[sync] remote` 时执行 `rclone lsd <remote> --timeout 15s`，失败重试 1 次）。
+  - 白名单护栏：只允许操作 `hushai-<实例>-*` 与 `rclone-*.service` / `mnt-onedrive-*.mount`，白名单外的单元名一律拒绝操作并上报。
+  - 静默与上报：全正常只写账本 `job=heal, result=ok`；已自愈写账本加 `hub/inbox/<日期>-heal.md` 一行（`自愈：X，动作 Y，结果 Z`）；修 2 次仍失败或不在白名单则在 `hub/today.md` 顶部加一条 `- 系统：X 坏了，建议 Y`（`<状态目录>/heal-alerts.json` 24 小时去重），账本记 `result=needs_human`。
+- **`hushai capture`**：
+  - 从标准输入读取钩子 JSON（`session_id`、`transcript_path`），纯机械提取会话 JSONL 最后一条人类消息的前 80 字写入 `hub/inbox/<日期>-<door>-auto.md`。
+  - 同一 `session_id` 10 分钟内最多写一行（状态存于 `<状态目录>/capture-state.json`）。
+
+### 7.10 目标（预留，未启用）
+
+- **文件**：`hub/goals.md`（预留，未启用，当前不创建文件、不编写代码）。
+- **格式**：每个目标一节，四栏 `目标｜现状｜理想状态｜服务它的项目`，上限 3 个。

@@ -148,7 +148,7 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(proc_w.returncode, 0, msg=proc_w.stderr)
         data = json.loads(proc_w.stdout)
         self.assertTrue(data["ok"])
-        self.assertEqual(len(data["units"]), 7)
+        self.assertEqual(len(data["units"]), 9)
         self.assertEqual(len(data["doorkit"]), 4)
         wiz_cfg = load_instance_config("wiz")
         self.assertEqual(wiz_cfg.timezone, "Asia/Yangon")

@@ -133,12 +133,14 @@ def refresh_today(
         raise ValueError(f"非法日期: {fallback_date!r}")
 
     has_degraded = any(ln.strip() == DEGRADED_QUOTE for ln in existing_text.splitlines())
+    sys_alerts = [ln.strip() for ln in existing_text.splitlines() if ln.strip().startswith("- 系统：")]
     lines = [
         f"# 今日待办 {target_date.isoformat()}",
         TODAY_QUOTE,
     ]
     if has_degraded:
         lines.append(DEGRADED_QUOTE)
+    lines.extend(sys_alerts)
 
     if not entries:
         lines.append(EMPTY_TODAY_TEXT)
