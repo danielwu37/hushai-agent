@@ -41,7 +41,16 @@ def dispatch_outbox_command(args: argparse.Namespace) -> int | None:
     if action in ("status", "list"):
         res = outbox.list_envelopes(cfg, status=args.status)
         if args.json:
-            out_payload = {"delivery_semantics": res["delivery_semantics"], "counts": res["counts"]} if action == "status" else res
+            out_payload = (
+                {
+                    "delivery_semantics": res["delivery_semantics"],
+                    "dedupe_health": res["dedupe_health"],
+                    "corrupted_dedupe_index": res["corrupted_dedupe_index"],
+                    "counts": res["counts"],
+                }
+                if action == "status"
+                else res
+            )
             print(json.dumps(out_payload, ensure_ascii=False, indent=2))
         else:
             c = res["counts"]
@@ -49,6 +58,8 @@ def dispatch_outbox_command(args: argparse.Namespace) -> int | None:
                 f"Outbox [{res['delivery_semantics']}]: "
                 f"pending={c['pending']} sending={c['sending']} sent={c['sent']} failed={c['failed']} archive={c['archive']}"
             )
+            if res["dedupe_health"] in ("corrupt", "missing_with_envelopes"):
+                print(f"  [WARN] dedupe_health={res['dedupe_health']} (corrupted_dedupe_index={res['corrupted_dedupe_index']})")
             if action == "list":
                 for env in res["envelopes"]:
                     if env.get("corrupted"):

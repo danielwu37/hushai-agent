@@ -335,5 +335,439 @@ class TestP0O2Outbox(unittest.TestCase):
         self.assertEqual(p_ar.returncode, 0, msg=p_ar.stderr)
 
 
+class TestP0O2OutboxCodexFixes(unittest.TestCase):
+    """P0/O2 针对 Codex NEEDS_FIX 审查阻塞项与 N4/N5/N7/N8 的专项回归与故障注入测试。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.cfg_root = self.root / "cfg"
+        self.state_root = self.root / "state"
+        self.vault_dir = self.root / "vault"
+        self._env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "HUSHAI_CONFIG_ROOT": str(self.cfg_root),
+                "HUSHAI_STATE_ROOT": str(self.state_root),
+            },
+        )
+        self._env_patch.start()
+        from hushai_agent.vault import init_instance
+
+        init_instance("demo", self.vault_dir, timezone="Asia/Shanghai", no_git=True)
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    def cfg(self, name: str = "demo"):
+        from hushai_agent.config import load_instance_config
+
+        return load_instance_config(name)
+
+    def _spawn_helper_and_sigkill(self, code: str, flag_path: Path, env_extra: dict[str, str] | None = None) -> None:
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = f"/root/hushai-agent/src:{env.get('PYTHONPATH', '')}".rstrip(":")
+        if env_extra:
+            env.update(env_extra)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if flag_path.is_file():
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.02)
+            if not flag_path.is_file():
+                out, err = proc.communicate(timeout=2)
+                self.fail(f"子进程未到达挂起点: rc={proc.returncode} stdout={out!r} stderr={err!r}")
+            os.kill(proc.pid, signal.SIGKILL)
+            rc = proc.wait(timeout=5)
+            self.assertEqual(rc, -signal.SIGKILL)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+
+    def test_06_versioned_transition_identical_timestamp_and_sigkill_all_transitions(self) -> None:
+        """B1/N6/N7/N8: 同时间戳全状态迁移崩溃按 transition_seq 稳定胜出，且真实 SIGKILL 后可恢复。"""
+        from hushai_agent import outbox, outbox_store
+
+        cfg = self.cfg()
+        fixed_now = "2026-03-02T10:00:00"
+
+        # 1) failed -> pending 同时间戳、相同 attempts，写目标后删除源文件前崩溃：retry 不得被 _STATUS_TIE_ORDER 静默撤销
+        e1 = outbox.enqueue(cfg, "webhook_stub", "ep", {"x": 1}, dedupe_key="b1-failed-pending", max_attempts=1, now=fixed_now)
+        mid1 = e1["message_id"]
+        fl1 = outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (False, "fail-once")}, now=fixed_now)
+        self.assertEqual(fl1["failed"], 1)
+
+        def fail_on(stage_target: str):
+            def _hook(stage: str) -> None:
+                if stage == stage_target:
+                    raise RuntimeError(f"crash-at:{stage}")
+            return _hook
+
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:failed->pending")):
+            with self.assertRaises(RuntimeError):
+                outbox.retry_failed(cfg, message_id=mid1, extra_attempts=2, now=fixed_now)
+
+        failed_file = outbox_store.state_subdir(cfg, "failed") / f"{mid1}.json"
+        pending_file = outbox_store.state_subdir(cfg, "pending") / f"{mid1}.json"
+        self.assertTrue(failed_file.is_file())
+        self.assertTrue(pending_file.is_file())
+        f_env = outbox_store.load_envelope(failed_file)
+        p_env = outbox_store.load_envelope(pending_file)
+        assert f_env and p_env
+        self.assertEqual(f_env["updated_at"], p_env["updated_at"])
+        self.assertEqual(f_env["attempts"], p_env["attempts"])
+        self.assertGreater(p_env["transition_seq"], f_env["transition_seq"])
+
+        cleaned = outbox_store.reconcile_duplicate_files(cfg)
+        self.assertEqual(cleaned, 1)
+        self.assertFalse(failed_file.exists())
+        self.assertTrue(pending_file.is_file())
+        fl_done = outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now=fixed_now)
+        self.assertEqual(fl_done["sent"], 1)
+
+        # 2) pending->sending / sending->pending / sending->failed / sending->sent / sent->archive 同时间戳全覆盖
+        transitions_ok: list[str] = []
+
+        # 2a) pending -> sending 写后未删崩溃
+        e2 = outbox.enqueue(cfg, "webhook_stub", "ep", {"x": 2}, dedupe_key="b1-p2s", max_attempts=3, now=fixed_now)
+        mid2 = e2["message_id"]
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:pending->sending")):
+            with self.assertRaises(RuntimeError):
+                outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(cfg, "sending") / f"{mid2}.json").is_file())
+        transitions_ok.append("pending->sending")
+
+        # 2b) sending -> pending（由 recover_stale_sending 或 backoff 写入 pending 后未删 sending）同时间戳崩溃
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:sending->pending")):
+            with self.assertRaises(RuntimeError):
+                outbox.recover_stale_sending(cfg, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(cfg, "pending") / f"{mid2}.json").is_file())
+        self.assertFalse((outbox_store.state_subdir(cfg, "sending") / f"{mid2}.json").exists())
+        transitions_ok.append("sending->pending")
+
+        # 2c) sending -> pending via flush failure backoff（同时间戳写 pending 后未删 sending）
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:sending->pending")):
+            with self.assertRaises(RuntimeError):
+                outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (False, "retry-me")}, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(cfg, "pending") / f"{mid2}.json").is_file())
+
+        # 2d) sending -> failed（达到 max_attempts=1，同时间戳写 failed 后未删 sending）
+        e2b = outbox.enqueue(cfg, "webhook_stub", "ep", {"x": 20}, dedupe_key="b1-s2f", max_attempts=1, now=fixed_now)
+        mid2b = e2b["message_id"]
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:sending->failed")):
+            with self.assertRaises(RuntimeError):
+                outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (False, "final-fail")}, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(cfg, "failed") / f"{mid2b}.json").is_file())
+        self.assertFalse((outbox_store.state_subdir(cfg, "sending") / f"{mid2b}.json").exists())
+        transitions_ok.append("sending->failed")
+
+        # 2e) sending -> sent（同时间戳写 sent 后未删 sending；先归档清理之前的 mid1 保证仅剩 mid3）
+        outbox.archive_old(cfg, retain_days=0, now=fixed_now)
+        e3 = outbox.enqueue(cfg, "webhook_stub", "ep", {"x": 3}, dedupe_key="b1-s2sent", max_attempts=2, now=fixed_now)
+        mid3 = e3["message_id"]
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:sending->sent")):
+            with self.assertRaises(RuntimeError):
+                outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(cfg, "sent") / f"{mid3}.json").is_file())
+        transitions_ok.append("sending->sent")
+
+        # 2f) sent -> archive（同时间戳写 archive 后未删 sent）
+        with mock.patch.object(outbox, "_stage_hook", side_effect=fail_on("after_transition_write:sent->archive")):
+            with self.assertRaises(RuntimeError):
+                outbox.archive_old(cfg, retain_days=0, now=fixed_now)
+        self.assertEqual(outbox_store.reconcile_duplicate_files(cfg), 1)
+        self.assertFalse((outbox_store.state_subdir(cfg, "sent") / f"{mid3}.json").exists())
+        self.assertEqual(len(list((outbox_store.state_subdir(cfg, "archive")).rglob(f"{mid3}.json"))), 1)
+        transitions_ok.append("sent->archive")
+        self.assertEqual(len(transitions_ok), 5)
+
+        # 3) 真实子进程 SIGKILL 故障注入：failed -> pending 写后删前 + flush sending 外部投递后转 sent 前
+        ek1 = outbox.enqueue(cfg, "webhook_stub", "ep", {"k": 1}, dedupe_key="sigkill-r", max_attempts=1, now=fixed_now)
+        mid_k1 = ek1["message_id"]
+        outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (False, "fail")}, now=fixed_now)
+
+        flag1 = self.root / "sigkill_retry.ready"
+        child_retry = f"""
+import time
+from pathlib import Path
+from unittest import mock
+from hushai_agent import outbox
+
+def _hook(stage):
+    if stage == "after_transition_write:failed->pending":
+        Path({str(flag1)!r}).write_text("ready", encoding="utf-8")
+        time.sleep(30)
+
+with mock.patch.object(outbox, "_stage_hook", side_effect=_hook):
+    outbox.retry_failed("demo", message_id={mid_k1!r}, extra_attempts=2, now={fixed_now!r})
+"""
+        self._spawn_helper_and_sigkill(child_retry, flag1)
+        # SIGKILL 后两份同时间戳文件共存，next flush 必须恢复 pending 并投递成功
+        self.assertTrue((outbox_store.state_subdir(cfg, "failed") / f"{mid_k1}.json").is_file())
+        self.assertTrue((outbox_store.state_subdir(cfg, "pending") / f"{mid_k1}.json").is_file())
+        res_k1 = outbox.flush(cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now=fixed_now)
+        self.assertEqual(res_k1["sent"], 1)
+        self.assertFalse((outbox_store.state_subdir(cfg, "failed") / f"{mid_k1}.json").exists())
+        self.assertTrue((outbox_store.state_subdir(cfg, "sent") / f"{mid_k1}.json").is_file())
+
+        # 3b) 真实 SIGKILL on flush after_external_send_before_sent（至少一次外部发送后被杀，父进程恢复重投并收口）
+        ek2 = outbox.enqueue(
+            cfg,
+            "exchange_out",
+            "laptop",
+            {"rel_path": "hub/exchange/out/to-laptop/sigkill.md", "content": "sigkill-test"},
+            dedupe_key="sigkill-flush",
+            max_attempts=3,
+            now=fixed_now,
+        )
+        mid_k2 = ek2["message_id"]
+        flag2 = self.root / "sigkill_flush.ready"
+        child_flush = f"""
+import time
+from pathlib import Path
+from unittest import mock
+from hushai_agent import outbox
+
+def _hook(stage):
+    if stage == "after_external_send_before_sent":
+        Path({str(flag2)!r}).write_text("ready", encoding="utf-8")
+        time.sleep(30)
+
+with mock.patch.object(outbox, "_stage_hook", side_effect=_hook):
+    outbox.flush("demo", now={fixed_now!r})
+"""
+        self._spawn_helper_and_sigkill(child_flush, flag2)
+        self.assertTrue((cfg.vault / "hub/exchange/out/to-laptop/sigkill.md").is_file())
+        self.assertTrue((outbox_store.state_subdir(cfg, "sending") / f"{mid_k2}.json").is_file())
+        res_k2 = outbox.flush(cfg, now=fixed_now)
+        self.assertEqual(res_k2["recovered"], 1)
+        self.assertEqual(res_k2["sent"], 1)
+        sent_k2 = outbox_store.load_envelope(outbox_store.state_subdir(cfg, "sent") / f"{mid_k2}.json")
+        assert sent_k2 is not None
+        self.assertEqual(sent_k2["attempts"], 2)
+
+    def test_07_archive_permanent_dedupe_and_corrupt_dedupe_rebuild_diagnostics(self) -> None:
+        """B2/N4: 永久幂等键归档后删/毁 dedupe.json 仍防重；冷却键过期可重入；损坏索引诊断暴露且空箱静默。"""
+        from hushai_agent import cli, outbox, outbox_store
+
+        # 未初始化空实例：不误报 corrupt、无 rebuilt 噪声
+        cfg_empty_vault = self.root / "vault_empty"
+        from hushai_agent.vault import init_instance
+
+        init_instance("emptybox", cfg_empty_vault, timezone="Asia/Shanghai", no_git=True)
+        empty_list = outbox.list_envelopes("emptybox")
+        self.assertEqual(empty_list["dedupe_health"], "uninitialized")
+        self.assertFalse(empty_list["corrupted_dedupe_index"])
+        empty_flush = outbox.flush("emptybox")
+        self.assertEqual(empty_flush["dedupe_health"], "uninitialized")
+        self.assertFalse(empty_flush["dedupe_rebuilt"])
+
+        cfg = self.cfg()
+        t0 = "2026-01-01T10:00:00"
+        e_perm = outbox.enqueue(cfg, "exchange_out", "laptop", {"rel_path": "hub/exchange/out/to-laptop/p.md", "content": "p"}, dedupe_key="perm-arch", immediate_sent=True, now=t0)
+        e_exp = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：旧冷却"}, dedupe_key="cool-exp", cooldown_seconds=3600, immediate_sent=True, now=t0)
+        e_act = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：长冷却"}, dedupe_key="cool-act", cooldown_seconds=86400 * 90, immediate_sent=True, now=t0)
+        self.assertTrue(e_perm["queued"] and e_exp["queued"] and e_act["queued"])
+
+        arch = outbox.archive_old(cfg, retain_days=30, now="2026-02-15T10:00:00")
+        self.assertEqual(arch["archived"], 3)
+        self.assertGreaterEqual(arch["pruned_dedupe"], 1)
+
+        dedupe_file = outbox_store.outbox_dir(cfg) / "dedupe.json"
+
+        # 1) 删除 dedupe.json：归档区中的永久幂等键 & 未过期冷却键必须仍去重，过期冷却键可重建再入
+        dedupe_file.unlink()
+        diag_missing = outbox.list_envelopes(cfg)
+        self.assertEqual(diag_missing["dedupe_health"], "missing_with_envelopes")
+        self.assertFalse(diag_missing["corrupted_dedupe_index"])
+
+        dup_perm = outbox.enqueue(cfg, "exchange_out", "laptop", {"rel_path": "x", "content": "x"}, dedupe_key="perm-arch", now="2026-02-15T10:01:00")
+        self.assertFalse(dup_perm["queued"])
+        self.assertTrue(dup_perm["deduplicated"])
+        self.assertEqual(dup_perm["status"], "archive")
+        self.assertEqual(dup_perm["dedupe_health"], "missing_with_envelopes")
+        self.assertTrue(dup_perm["dedupe_rebuilt"])
+
+        dedupe_file.unlink()
+        dup_cool = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：重复"}, dedupe_key="cool-act", now="2026-02-15T10:02:00")
+        self.assertFalse(dup_cool["queued"])
+        self.assertTrue(dup_cool["deduplicated"])
+
+        re_exp = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：过期重入"}, dedupe_key="cool-exp", cooldown_seconds=3600, now="2026-02-15T10:03:00")
+        self.assertTrue(re_exp["queued"])
+
+        # 2) 损坏 dedupe.json（"{corrupt" 与 非字典 "[]"）：诊断可见，且自动重建后永久键继续去重
+        dedupe_file.write_text("{corrupt", encoding="utf-8")
+        diag_bad1 = outbox.list_envelopes(cfg)
+        self.assertEqual(diag_bad1["dedupe_health"], "corrupt")
+        self.assertTrue(diag_bad1["corrupted_dedupe_index"])
+
+        import contextlib
+        import io
+        import json as _json
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cli.main(["outbox", "status", "--instance", "demo", "--json"])
+        self.assertEqual(rc, 0)
+        cli_json = _json.loads(buf.getvalue())
+        self.assertEqual(cli_json["dedupe_health"], "corrupt")
+        self.assertTrue(cli_json["corrupted_dedupe_index"])
+
+        healed_enq = outbox.enqueue(cfg, "exchange_out", "laptop", {"rel_path": "x", "content": "x"}, dedupe_key="perm-arch", now="2026-02-15T10:04:00")
+        self.assertFalse(healed_enq["queued"])
+        self.assertTrue(healed_enq["deduplicated"])
+        self.assertEqual(healed_enq["dedupe_health"], "corrupt")
+        self.assertTrue(healed_enq["dedupe_rebuilt"])
+        self.assertEqual(outbox.list_envelopes(cfg)["dedupe_health"], "ok")
+
+        dedupe_file.write_text("[]", encoding="utf-8")
+        self.assertTrue(outbox.list_envelopes(cfg)["corrupted_dedupe_index"])
+        healed_flush = outbox.flush(cfg, now="2026-02-15T10:05:00")
+        self.assertEqual(healed_flush["dedupe_health"], "corrupt")
+        self.assertTrue(healed_flush["dedupe_rebuilt"])
+        self.assertFalse(outbox.list_envelopes(cfg)["corrupted_dedupe_index"])
+
+    def test_08_clock_skew_tz_dst_cooldown_boundary_and_heal_crash_24h(self) -> None:
+        """N5 + heal 崩后 24h 去重：冷却边界精确判定、DST 春进跨界、跨时区排序与时钟回拨、heal 崩后不重复写入。"""
+        import datetime
+        from zoneinfo import ZoneInfo
+        from hushai_agent import clock, heal, outbox, outbox_store
+        from hushai_agent.vault import init_instance
+
+        cfg = self.cfg()
+
+        # 1) 冷却精确边界：T0+3599 去重，T0+3600 允许重入
+        c0 = "2026-03-02T10:00:00"
+        c_first = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：边界1"}, dedupe_key="bound-k", cooldown_seconds=3600, immediate_sent=True, now=c0)
+        self.assertTrue(c_first["queued"])
+        c_before = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：边界2"}, dedupe_key="bound-k", cooldown_seconds=3600, now="2026-03-02T10:59:59")
+        self.assertFalse(c_before["queued"])
+        c_exact = outbox.enqueue(cfg, "today_alert", "steward", {"alert_line": "- 系统：边界3"}, dedupe_key="bound-k", cooldown_seconds=3600, now="2026-03-02T11:00:00")
+        self.assertTrue(c_exact["queued"])
+
+        # 2) DST 春进跨界（America/New_York 2026-03-08 02:00 -> 03:00）：3600 秒真实耗时应到 03:30-04:00 而非 02:30-05:00
+        ny_vault = self.root / "vault_ny"
+        init_instance("nybox", ny_vault, timezone="America/New_York", no_git=True)
+        ny_cfg = self.cfg("nybox")
+        dst_start = "2026-03-08T01:30:00-05:00"
+        ny_enq = outbox.enqueue(
+            ny_cfg,
+            "webhook_stub",
+            "ep",
+            {"dst": True},
+            dedupe_key="dst-k",
+            cooldown_seconds=3600,
+            base_backoff_seconds=3600,
+            max_backoff_seconds=3600,
+            max_attempts=3,
+            now=dst_start,
+        )
+        self.assertTrue(ny_enq["queued"])
+        # 触发一次失败 -> next_retry_at 必须精确落在真实 +3600s 的 03:30-04:00
+        ny_fail = outbox.flush(ny_cfg, handlers={"webhook_stub": lambda _c, _e: (False, "retry")}, now=dst_start)
+        self.assertEqual(ny_fail["retried"], 1)
+        p_env = outbox_store.load_envelope(outbox_store.state_subdir(ny_cfg, "pending") / f"{ny_enq['message_id']}.json")
+        assert p_env is not None
+        next_utc = outbox_store.parse_iso(p_env["next_retry_at"], ZoneInfo("America/New_York")).astimezone(datetime.timezone.utc)
+        start_utc = outbox_store.parse_iso(dst_start, ZoneInfo("America/New_York")).astimezone(datetime.timezone.utc)
+        self.assertEqual(int((next_utc - start_utc).total_seconds()), 3600)
+
+        # +30 分钟（03:00-04:00）：冷却与退避均未到期
+        self.assertFalse(outbox.enqueue(ny_cfg, "webhook_stub", "ep", {}, dedupe_key="dst-k", cooldown_seconds=3600, now="2026-03-08T03:00:00-04:00")["queued"])
+        self.assertEqual(outbox.flush(ny_cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now="2026-03-08T03:00:00-04:00")["deferred_backoff"], 1)
+        # +60 分钟（03:30-04:00）：退避与冷却均精确到期
+        self.assertEqual(outbox.flush(ny_cfg, handlers={"webhook_stub": lambda _c, _e: (True, "ok")}, now="2026-03-08T03:30:00-04:00")["sent"], 1)
+        self.assertTrue(outbox.enqueue(ny_cfg, "webhook_stub", "ep", {}, dedupe_key="dst-k", cooldown_seconds=3600, now="2026-03-08T03:30:00-04:00")["queued"])
+
+        # 3) 跨时区 UTC instant 排序 + 时钟回拨：03:00Z(+08 11:00) 必须先于 10:00Z(+00 10:00) 投递
+        order_cfg_vault = self.root / "vault_tz"
+        init_instance("tzbox", order_cfg_vault, timezone="Asia/Shanghai", no_git=True)
+        tz_cfg = self.cfg("tzbox")
+        delivered_order: list[str] = []
+        e_later_utc = outbox.enqueue(tz_cfg, "stub", "ep", {"tag": "later-10Z"}, dedupe_key="tz-1", now="2026-03-02T10:00:00+00:00")
+        e_early_sh = outbox.enqueue(tz_cfg, "stub", "ep", {"tag": "early-03Z"}, dedupe_key="tz-2", now="2026-03-02T11:00:00+08:00")
+        outbox.flush(tz_cfg, handlers={"stub": lambda _c, env: (delivered_order.append(env["payload"]["tag"]) is None, "ok")}, now="2026-03-02T19:00:00+08:00")
+        self.assertEqual(delivered_order, ["early-03Z", "later-10Z"])
+        self.assertTrue(e_later_utc["queued"] and e_early_sh["queued"])
+
+        # 时钟回拨下 retry_failed + 写后崩：transition_seq 依然击败回拨时间
+        ef_skew = outbox.enqueue(tz_cfg, "stub", "ep", {}, dedupe_key="skew-k", max_attempts=1, now="2026-03-02T12:00:00+08:00")
+        outbox.flush(tz_cfg, handlers={"stub": lambda _c, _e: (False, "f")}, now="2026-03-02T12:00:00+08:00")
+        with mock.patch.object(
+            outbox,
+            "_stage_hook",
+            side_effect=lambda st: (_ for _ in ()).throw(RuntimeError("skew-crash")) if st == "after_transition_write:failed->pending" else None,
+        ):
+            with self.assertRaises(RuntimeError):
+                outbox.retry_failed(tz_cfg, message_id=ef_skew["message_id"], extra_attempts=2, now="2026-03-02T08:00:00+08:00")
+        self.assertEqual(outbox_store.reconcile_duplicate_files(tz_cfg), 1)
+        self.assertTrue((outbox_store.state_subdir(tz_cfg, "pending") / f"{ef_skew['message_id']}.json").is_file())
+
+        # 4) heal._report_needs_human 写完 today.md、在 atomic_write(heal-alerts.json) 前崩溃 -> 归档+删/损 dedupe.json 后 24h 内不重发，超 24h 后重发
+        heal_vault = self.root / "vault_heal"
+        init_instance("healbox", heal_vault, timezone="Asia/Shanghai", no_git=True)
+        h_cfg = self.cfg("healbox")
+        item = {"id": "svc-x", "name": "网关", "problem": "连接超时", "suggestion": "检查端口"}
+        t_alert0 = outbox_store.parse_iso("2026-03-05T10:00:00+08:00", ZoneInfo("Asia/Shanghai"))
+        orig_atomic = heal.atomic_write
+
+        def crash_on_alerts_json(path: Path, content: str, allowed_roots: list[Path]) -> None:
+            if Path(path).name == "heal-alerts.json":
+                raise RuntimeError("crash-before-heal-alerts-json")
+            orig_atomic(path, content, allowed_roots)
+
+        with mock.patch.object(clock, "now", return_value=t_alert0), mock.patch.object(heal, "atomic_write", side_effect=crash_on_alerts_json):
+            with self.assertRaises(RuntimeError):
+                heal._report_needs_human(h_cfg, item)
+
+        from hushai_agent.paths import get_instance_state_dir
+
+        self.assertFalse((get_instance_state_dir("healbox") / "heal-alerts.json").exists())
+        today_path = h_cfg.vault / "hub" / "today.md"
+        today_text_1 = today_path.read_text(encoding="utf-8") if today_path.is_file() else ""
+        self.assertEqual(today_text_1.count("系统：网关（连接超时）坏了"), 1)
+
+        # 清空 today.md 模拟人工清除当日行后，即使同时归档并损坏 dedupe.json，24h 内仍由 outbox 重建索引抑制重发
+        today_path.write_text("# 今日待办\n", encoding="utf-8")
+        outbox.archive_old(h_cfg, retain_days=0, now="2026-03-05T10:05:00+08:00")
+        (outbox_store.outbox_dir(h_cfg) / "dedupe.json").write_text("{corrupt", encoding="utf-8")
+        t_within_24h = outbox_store.parse_iso("2026-03-06T09:59:59+08:00", ZoneInfo("Asia/Shanghai"))
+        with mock.patch.object(clock, "now", return_value=t_within_24h):
+            res_dup = heal._report_needs_human(h_cfg, item)
+        self.assertIsNone(res_dup)
+        self.assertEqual(today_path.read_text(encoding="utf-8").count("系统：网关（连接超时）坏了"), 0)
+
+        # 超过 24h 后允许再次告警并写入 today.md
+        t_after_24h = outbox_store.parse_iso("2026-03-06T10:00:01+08:00", ZoneInfo("Asia/Shanghai"))
+        with mock.patch.object(clock, "now", return_value=t_after_24h):
+            res_new = heal._report_needs_human(h_cfg, item)
+        self.assertIsNotNone(res_new)
+        self.assertEqual(today_path.read_text(encoding="utf-8").count("系统：网关（连接超时）坏了"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

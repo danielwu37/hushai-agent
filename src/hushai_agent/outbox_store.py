@@ -19,7 +19,12 @@ OUTBOX_STATES = ("pending", "sending", "sent", "failed")
 OUTBOX_LOCK_NAME = "outbox.lock"
 DELIVERY_SEMANTICS = "at-least-once"
 
-_STATUS_TIE_ORDER = {"pending": 1, "sending": 2, "failed": 3, "sent": 4}
+_STATUS_TIE_ORDER = {"pending": 1, "sending": 2, "failed": 3, "sent": 4, "archive": 5}
+
+
+def _stage_hook(stage: str) -> None:
+    """供测试与故障注入使用的存储层阶段钩子点（生产环境下为空操作）。"""
+    _ = stage
 
 
 def outbox_dir(cfg: InstanceConfig | str) -> Path:
@@ -56,18 +61,41 @@ def parse_iso(raw: str | None, tz: ZoneInfo) -> datetime.datetime | None:
     return dt.astimezone(tz)
 
 
-def load_dedupe(cfg: InstanceConfig | str) -> dict[str, dict[str, Any]]:
-    """读取 <state>/outbox/dedupe.json；文件损坏时安全返回空表。"""
+def iso_to_utc_ts(raw: str | None) -> float:
+    """将 ISO 时间转为可跨时区比较的 UTC epoch 秒数（无时区按 UTC 兜底）。"""
+    if not raw or not isinstance(raw, str):
+        return 0.0
+    try:
+        dt = datetime.datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    else:
+        dt = dt.astimezone(datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def load_dedupe_status(cfg: InstanceConfig | str) -> tuple[dict[str, dict[str, Any]], str]:
+    """读取 <state>/outbox/dedupe.json 并返回 (表, 健康态: ok|missing|corrupt)。"""
     path = outbox_dir(cfg) / "dedupe.json"
     if not path.is_file():
-        return {}
+        return {}, "missing"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
-        return {}
+        return {}, "corrupt"
     if not isinstance(raw, dict):
-        return {}
-    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+        return {}, "corrupt"
+    cleaned = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    if len(cleaned) != len(raw):
+        return cleaned, "corrupt"
+    return cleaned, "ok"
+
+
+def load_dedupe(cfg: InstanceConfig | str) -> dict[str, dict[str, Any]]:
+    """读取 <state>/outbox/dedupe.json；文件损坏时安全返回空表。"""
+    return load_dedupe_status(cfg)[0]
 
 
 def save_dedupe(cfg: InstanceConfig | str, table: dict[str, dict[str, Any]]) -> Path:
@@ -103,11 +131,13 @@ def transition_envelope(
     dst_state: str,
     env: dict[str, Any],
     archive_ym: str | None = None,
+    on_after_write: Any = None,
 ) -> Path:
-    """先原子写入目标目录再删除源目录文件（配合 reconcile_duplicate_files 消除中途崩溃双份）。"""
+    """递增单调迁移版本号 transition_seq 后先原子写入目标目录再删除源目录文件。"""
     state_dir = get_instance_state_dir(cfg.name if isinstance(cfg, InstanceConfig) else str(cfg))
     ensure_layout(cfg)
     msg_id = str(env["message_id"])
+    env["transition_seq"] = max(1, int(env.get("transition_seq") or 0)) + 1
     if dst_state == "archive":
         ym = archive_ym or str(env.get("updated_at") or env.get("created_at") or "")[:7] or "unknown"
         dst_dir = ensure_dir(state_subdir(cfg, "archive") / ym, [state_dir])
@@ -115,6 +145,14 @@ def transition_envelope(
         atomic_write(dst_path, json.dumps(env, ensure_ascii=False, indent=2) + "\n", [state_dir])
     else:
         dst_path = write_envelope(cfg, dst_state, env)
+
+    hook_name = f"after_transition_write:{src_state}->{dst_state}"
+    _stage_hook(hook_name)
+    _stage_hook("after_transition_write")
+    if on_after_write is not None:
+        on_after_write(hook_name)
+        on_after_write("after_transition_write")
+
     unlink_safe(state_subdir(cfg, src_state) / f"{msg_id}.json", state_dir)
     return dst_path
 
@@ -159,38 +197,58 @@ def has_active_envelope(cfg: InstanceConfig | str, message_id: str) -> str | Non
     return None
 
 
-def reconcile_duplicate_files(cfg: InstanceConfig | str) -> int:
-    """清理原子迁移中途崩溃（新文件已写、旧文件未删）造成的跨目录同 ID 双份残留。"""
-    state_dir = get_instance_state_dir(cfg.name if isinstance(cfg, InstanceConfig) else str(cfg))
-    by_id: dict[str, list[tuple[str, Path, dict[str, Any]]]] = {}
-    removed = 0
+def iter_all_envelope_files(cfg: InstanceConfig | str) -> list[tuple[str, Path]]:
+    """按状态枚举 pending/sending/sent/failed 与 archive/YYYY-MM/ 中的全部非隔离信封文件。"""
+    out: list[tuple[str, Path]] = []
     for st in OUTBOX_STATES:
         sdir = state_subdir(cfg, st)
         if not sdir.is_dir():
             continue
         for p in sorted(sdir.glob("*.json")):
-            if p.name.startswith("corrupt-"):
-                continue
-            env = load_envelope(p)
-            if env is None:
-                continue
-            msg_id = str(env["message_id"])
-            by_id.setdefault(msg_id, []).append((st, p, env))
+            if not p.name.startswith("corrupt-"):
+                out.append((st, p))
+    adir = state_subdir(cfg, "archive")
+    if adir.is_dir():
+        for p in sorted(adir.rglob("*.json")):
+            if p.is_file() and not p.name.startswith("corrupt-"):
+                out.append(("archive", p))
+    return out
+
+
+def reconcile_duplicate_files(cfg: InstanceConfig | str) -> int:
+    """清理原子迁移中途崩溃（含归档迁移）造成的跨目录同 ID 双份残留，优先按 transition_seq 裁决。"""
+    state_dir = get_instance_state_dir(cfg.name if isinstance(cfg, InstanceConfig) else str(cfg))
+    by_id: dict[str, list[tuple[str, Path, dict[str, Any]]]] = {}
+    removed = 0
+    for st, p in iter_all_envelope_files(cfg):
+        env = load_envelope(p)
+        if env is None:
+            continue
+        msg_id = str(env["message_id"])
+        by_id.setdefault(msg_id, []).append((st, p, env))
 
     for _, entries in by_id.items():
         if len(entries) <= 1:
             continue
-        # 以 status==目录、attempts、updated_at 及终态优先级选出唯一最新副本
-        winner = max(
-            entries,
-            key=lambda item: (
-                int(str(item[2].get("status") or "") == item[0]),
-                int(item[2].get("attempts") or 0),
-                str(item[2].get("updated_at") or ""),
-                _STATUS_TIE_ORDER.get(item[0], 0),
-            ),
-        )
-        for st, p, _ in entries:
+
+        def _winner_key(item: tuple[str, Path, dict[str, Any]]) -> tuple[int, int, int, float, int]:
+            dir_state, _, env = item
+            env_status = str(env.get("status") or "")
+            status_matches_dir = (
+                int(env_status in ("sent", "failed"))
+                if dir_state == "archive"
+                else int(env_status == dir_state)
+            )
+            return (
+                int(env.get("transition_seq") or 0),
+                status_matches_dir,
+                int(env.get("attempts") or 0),
+                iso_to_utc_ts(env.get("updated_at")),
+                _STATUS_TIE_ORDER.get(dir_state, 0),
+            )
+
+        winner = max(entries, key=_winner_key)
+        for _, p, _ in entries:
             if p != winner[1]:
                 unlink_safe(p, state_dir)
                 removed += 1

@@ -24,7 +24,10 @@ from hushai_agent.outbox_store import (
     OUTBOX_STATES,
     ensure_layout,
     has_active_envelope,
+    iso_to_utc_ts,
+    iter_all_envelope_files,
     load_dedupe,
+    load_dedupe_status,
     load_envelope,
     outbox_dir,
     parse_iso,
@@ -49,6 +52,15 @@ HandlerFn = Callable[[InstanceConfig, dict[str, Any]], tuple[bool, str]]
 def _stage_hook(stage: str) -> None:
     """供测试与故障注入使用的阶段钩子点（生产环境下为空操作）。"""
     _ = stage
+
+
+def _utc(dt: datetime.datetime) -> datetime.datetime:
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def _shift_seconds(dt: datetime.datetime, seconds: int | float, tz: ZoneInfo) -> datetime.datetime:
+    # 经由 UTC 瞬时做时间偏移，避免 DST 跨界时 aware + timedelta 按墙钟偏移出错
+    return (_utc(dt) + datetime.timedelta(seconds=seconds)).astimezone(tz)
 
 
 def _now_dt(cfg: InstanceConfig, now: datetime.datetime | str | None = None) -> datetime.datetime:
@@ -107,27 +119,42 @@ def has_pending_or_sending(cfg: InstanceConfig | str) -> bool:
     return False
 
 
-def _find_active_by_dedupe_key(cfg: InstanceConfig, dedupe_key: str) -> tuple[str, dict[str, Any]] | None:
+def _find_latest_by_dedupe_key(cfg: InstanceConfig, dedupe_key: str) -> tuple[str, dict[str, Any]] | None:
     matches: list[tuple[str, dict[str, Any]]] = []
-    for st in ("pending", "sending", "sent", "failed"):
-        sdir = state_subdir(cfg, st)
-        if not sdir.is_dir():
-            continue
-        for p in sorted(sdir.glob("*.json")):
-            if p.name.startswith("corrupt-"):
-                continue
-            env = load_envelope(p)
-            if env and str(env.get("dedupe_key") or "") == dedupe_key:
-                matches.append((st, env))
+    for st, p in iter_all_envelope_files(cfg):
+        env = load_envelope(p)
+        if env and str(env.get("dedupe_key") or "") == dedupe_key:
+            matches.append((st, env))
     if not matches:
         return None
-    return max(matches, key=lambda item: (str(item[1].get("created_at") or ""), str(item[1].get("message_id") or "")))
+    return max(
+        matches,
+        key=lambda item: (
+            iso_to_utc_ts(item[1].get("created_at")),
+            int(item[1].get("transition_seq") or 0),
+            str(item[1].get("message_id") or ""),
+        ),
+    )
+
+
+def _envelope_state_anywhere(cfg: InstanceConfig, message_id: str) -> str | None:
+    if not message_id:
+        return None
+    active = has_active_envelope(cfg, message_id)
+    if active is not None:
+        return active
+    for st, p in iter_all_envelope_files(cfg):
+        if st == "archive" and p.stem == message_id:
+            return "archive"
+    return None
 
 
 def _update_dedupe_entry(
     dedupe: dict[str, dict[str, Any]],
     env: dict[str, Any],
     now_iso: str,
+    *,
+    dir_state: str | None = None,
 ) -> None:
     dkey = str(env.get("dedupe_key") or "")
     if not dkey:
@@ -135,11 +162,55 @@ def _update_dedupe_entry(
     prev = dedupe.get(dkey) or {}
     dedupe[dkey] = {
         "message_id": env["message_id"],
-        "status": env["status"],
+        "status": "archive" if dir_state == "archive" else env["status"],
+        "transition_seq": int(env.get("transition_seq") or 1),
         "created_at": env.get("created_at", now_iso),
         "updated_at": now_iso,
         "expires_at": env.get("dedupe_expires_at", prev.get("expires_at")),
     }
+
+
+def _rebuild_dedupe_from_disk(cfg: InstanceConfig, now_iso: str) -> dict[str, dict[str, Any]]:
+    """从活跃目录与 archive/ 重建 dedupe 索引（同一 dedupe_key 保留最新信封）。"""
+    best_by_key: dict[str, tuple[tuple[float, int, str], str, dict[str, Any]]] = {}
+    for st, p in iter_all_envelope_files(cfg):
+        env = load_envelope(p)
+        if env is None:
+            continue
+        dkey = str(env.get("dedupe_key") or "").strip()
+        if not dkey:
+            continue
+        rank = (
+            iso_to_utc_ts(env.get("created_at")),
+            int(env.get("transition_seq") or 0),
+            str(env.get("message_id") or ""),
+        )
+        prev = best_by_key.get(dkey)
+        if prev is None or rank > prev[0]:
+            best_by_key[dkey] = (rank, st, env)
+
+    rebuilt: dict[str, dict[str, Any]] = {}
+    for dkey in sorted(best_by_key):
+        _, st, env = best_by_key[dkey]
+        _update_dedupe_entry(rebuilt, env, now_iso, dir_state=st)
+    return rebuilt
+
+
+def _load_dedupe_with_heal_locked(
+    cfg: InstanceConfig,
+    now_iso: str,
+) -> tuple[dict[str, dict[str, Any]], str, bool]:
+    """加载 dedupe 索引；仅当索引损坏或有信封却丢失索引时自动重建并写盘。"""
+    dedupe, status = load_dedupe_status(cfg)
+    if status == "ok":
+        return dedupe, "ok", False
+    files = iter_all_envelope_files(cfg)
+    if status == "missing" and not files:
+        return {}, "uninitialized", False
+    rebuilt = _rebuild_dedupe_from_disk(cfg, now_iso)
+    save_dedupe(cfg, rebuilt)
+    health = "corrupt" if status == "corrupt" else "missing_with_envelopes"
+    return rebuilt, health, True
 
 
 def enqueue(
@@ -165,32 +236,38 @@ def enqueue(
     tz = ZoneInfo(inst_cfg.timezone)
     now_dt = _now_dt(inst_cfg, now)
     now_iso = now_dt.isoformat()
-    expires_at = (now_dt + datetime.timedelta(seconds=cooldown_seconds)).isoformat() if cooldown_seconds else None
+    expires_at = _shift_seconds(now_dt, cooldown_seconds, tz).isoformat() if cooldown_seconds else None
 
     with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
         ensure_layout(inst_cfg)
-        dedupe = load_dedupe(inst_cfg)
+        reconcile_duplicate_files(inst_cfg)
+        dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
         existing = dedupe.get(dkey)
         if existing:
             exp_dt = parse_iso(existing.get("expires_at"), tz)
-            active_state = has_active_envelope(inst_cfg, str(existing.get("message_id") or ""))
-            # 若设了冷却窗口且已过期，则允许重新入队；否则在有效或永久去重下跳过
-            in_cooldown = exp_dt is not None and now_dt < exp_dt
-            permanent_dup = existing.get("expires_at") is None and active_state is not None
-            if in_cooldown or permanent_dup or (existing.get("expires_at") is None and existing.get("status") in OUTBOX_STATES):
+            loc_state = _envelope_state_anywhere(inst_cfg, str(existing.get("message_id") or ""))
+            # 若设了冷却窗口且已过期，则允许重新入队；否则在有效冷却或永久去重（含已归档）下跳过
+            in_cooldown = exp_dt is not None and _utc(now_dt) < _utc(exp_dt)
+            known_state = loc_state or (
+                existing.get("status") if existing.get("status") in (*OUTBOX_STATES, "archive") else None
+            )
+            permanent_dup = existing.get("expires_at") is None and known_state is not None
+            if in_cooldown or permanent_dup:
                 return {
                     "queued": False,
                     "deduplicated": True,
                     "message_id": existing.get("message_id"),
-                    "status": active_state or existing.get("status"),
+                    "status": loc_state or existing.get("status"),
                     "delivery_semantics": DELIVERY_SEMANTICS,
+                    "dedupe_health": dedupe_health,
+                    "dedupe_rebuilt": dedupe_rebuilt,
                 }
-        disk_hit = _find_active_by_dedupe_key(inst_cfg, dkey)
+        disk_hit = _find_latest_by_dedupe_key(inst_cfg, dkey)
         if disk_hit is not None:
             st, env = disk_hit
             exp_dt = parse_iso(env.get("dedupe_expires_at"), tz)
-            if exp_dt is None or now_dt < exp_dt:
-                _update_dedupe_entry(dedupe, env, now_iso)
+            if exp_dt is None or _utc(now_dt) < _utc(exp_dt):
+                _update_dedupe_entry(dedupe, env, now_iso, dir_state=st)
                 save_dedupe(inst_cfg, dedupe)
                 return {
                     "queued": False,
@@ -198,12 +275,15 @@ def enqueue(
                     "message_id": env["message_id"],
                     "status": st,
                     "delivery_semantics": DELIVERY_SEMANTICS,
+                    "dedupe_health": dedupe_health,
+                    "dedupe_rebuilt": dedupe_rebuilt,
                 }
 
         msg_id = f"OB-{now_dt.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         status = "sent" if immediate_sent else "pending"
         env: dict[str, Any] = {
             "version": 1,
+            "transition_seq": 1,
             "message_id": msg_id,
             "dedupe_key": dkey,
             "dedupe_expires_at": expires_at,
@@ -232,6 +312,8 @@ def enqueue(
             "message_id": msg_id,
             "status": status,
             "delivery_semantics": DELIVERY_SEMANTICS,
+            "dedupe_health": dedupe_health,
+            "dedupe_rebuilt": dedupe_rebuilt,
         }
 
 
@@ -244,10 +326,13 @@ def mark_acked_by_rel_paths(cfg: InstanceConfig | str, door: str, rel_paths: lis
     acked = 0
     now_iso = clock.now(inst_cfg).isoformat()
     with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
+        reconcile_duplicate_files(inst_cfg)
         sent_dir = state_subdir(inst_cfg, "sent")
         if not sent_dir.is_dir():
             return 0
         for p in sorted(sent_dir.glob("*.json")):
+            if p.name.startswith("corrupt-"):
+                continue
             env = load_envelope(p)
             if not env or env.get("channel") != "exchange_out" or env.get("target") != door:
                 continue
@@ -255,6 +340,7 @@ def mark_acked_by_rel_paths(cfg: InstanceConfig | str, door: str, rel_paths: lis
             if rel in targets and not env.get("acked_at"):
                 env["acked_at"] = now_iso
                 env["updated_at"] = now_iso
+                env["transition_seq"] = max(1, int(env.get("transition_seq") or 0)) + 1
                 write_envelope(inst_cfg, "sent", env)
                 acked += 1
     return acked
@@ -264,18 +350,27 @@ def _recover_stale_sending_locked(
     cfg: InstanceConfig,
     now_dt: datetime.datetime,
     stale_seconds: int | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     tz = ZoneInfo(cfg.timezone)
     now_iso = now_dt.isoformat()
     dedupe_cleaned = reconcile_duplicate_files(cfg)
+    dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(cfg, now_iso)
     sdir = state_subdir(cfg, "sending")
     recovered = failed = corrupted = 0
     if not sdir.is_dir():
-        return {"recovered": 0, "failed": 0, "corrupted": 0, "dedupe_cleaned": dedupe_cleaned}
+        return {
+            "recovered": 0,
+            "failed": 0,
+            "corrupted": 0,
+            "dedupe_cleaned": dedupe_cleaned,
+            "dedupe_health": dedupe_health,
+            "dedupe_rebuilt": dedupe_rebuilt,
+        }
 
-    dedupe = load_dedupe(cfg)
     changed_dedupe = False
     for p in sorted(sdir.glob("*.json")):
+        if p.name.startswith("corrupt-"):
+            continue
         env = load_envelope(p)
         if env is None:
             quarantine_corrupt(cfg, p, "invalid sending envelope json")
@@ -283,7 +378,7 @@ def _recover_stale_sending_locked(
             continue
         if stale_seconds is not None:
             started_dt = parse_iso(env.get("sending_started_at") or env.get("updated_at"), tz)
-            if started_dt is not None and (now_dt - started_dt).total_seconds() < stale_seconds:
+            if started_dt is not None and (_utc(now_dt) - _utc(started_dt)).total_seconds() < stale_seconds:
                 continue
         attempts = int(env.get("attempts") or 0)
         max_attempts = int(env.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
@@ -292,20 +387,27 @@ def _recover_stale_sending_locked(
         if attempts >= max_attempts:
             env["status"] = "failed"
             env["last_error"] = "crash-recovery-max-attempts"
-            transition_envelope(cfg, "sending", "failed", env)
+            transition_envelope(cfg, "sending", "failed", env, on_after_write=_stage_hook)
             failed += 1
         else:
             env["status"] = "pending"
             env["next_retry_at"] = now_iso
             env["last_error"] = "reclaimed-after-sending-crash"
-            transition_envelope(cfg, "sending", "pending", env)
+            transition_envelope(cfg, "sending", "pending", env, on_after_write=_stage_hook)
             recovered += 1
         _update_dedupe_entry(dedupe, env, now_iso)
         changed_dedupe = True
 
     if changed_dedupe:
         save_dedupe(cfg, dedupe)
-    return {"recovered": recovered, "failed": failed, "corrupted": corrupted, "dedupe_cleaned": dedupe_cleaned}
+    return {
+        "recovered": recovered,
+        "failed": failed,
+        "corrupted": corrupted,
+        "dedupe_cleaned": dedupe_cleaned,
+        "dedupe_health": dedupe_health,
+        "dedupe_rebuilt": dedupe_rebuilt,
+    }
 
 
 def recover_stale_sending(
@@ -341,7 +443,14 @@ def flush(
         reg.update(handlers)
 
     sent = failed = retried = deferred_backoff = corrupted = 0
-    rec_info = {"recovered": 0, "failed": 0, "corrupted": 0, "dedupe_cleaned": 0}
+    rec_info: dict[str, Any] = {
+        "recovered": 0,
+        "failed": 0,
+        "corrupted": 0,
+        "dedupe_cleaned": 0,
+        "dedupe_health": "uninitialized",
+        "dedupe_rebuilt": False,
+    }
 
     with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
         ensure_layout(inst_cfg)
@@ -350,14 +459,16 @@ def flush(
         failed += rec_info["failed"]
 
         pending_dir = state_subdir(inst_cfg, "pending")
-        candidates_list: list[tuple[str, str, Path, dict[str, Any]]] = []
+        candidates_list: list[tuple[float, str, Path, dict[str, Any]]] = []
         for p in sorted(pending_dir.glob("*.json")):
+            if p.name.startswith("corrupt-"):
+                continue
             env = load_envelope(p)
             if env is None:
                 quarantine_corrupt(inst_cfg, p, "invalid pending envelope json")
                 corrupted += 1
                 continue
-            candidates_list.append((str(env.get("created_at") or ""), str(env["message_id"]), p, env))
+            candidates_list.append((iso_to_utc_ts(env.get("created_at")), str(env["message_id"]), p, env))
         candidates_list.sort(key=lambda x: (x[0], x[1]))
 
         dedupe = load_dedupe(inst_cfg)
@@ -368,7 +479,7 @@ def flush(
             if channel_filter and env.get("channel") != channel_filter:
                 continue
             next_dt = parse_iso(env.get("next_retry_at"), tz)
-            if next_dt is not None and next_dt > now_dt:
+            if next_dt is not None and _utc(next_dt) > _utc(now_dt):
                 deferred_backoff += 1
                 continue
 
@@ -379,7 +490,7 @@ def flush(
             env["status"] = "sending"
             env["sending_started_at"] = now_iso
             env["updated_at"] = now_iso
-            transition_envelope(inst_cfg, "pending", "sending", env)
+            transition_envelope(inst_cfg, "pending", "sending", env, on_after_write=_stage_hook)
             _update_dedupe_entry(dedupe, env, now_iso)
             save_dedupe(inst_cfg, dedupe)
             _stage_hook("after_write_sending")
@@ -402,22 +513,22 @@ def flush(
                 env["status"] = "sent"
                 env["sent_at"] = end_iso
                 env["last_error"] = ""
-                transition_envelope(inst_cfg, "sending", "sent", env)
+                transition_envelope(inst_cfg, "sending", "sent", env, on_after_write=_stage_hook)
                 sent += 1
             else:
                 env["last_error"] = str(detail)[:500]
                 max_attempts = int(env.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
                 if attempts >= max_attempts:
                     env["status"] = "failed"
-                    transition_envelope(inst_cfg, "sending", "failed", env)
+                    transition_envelope(inst_cfg, "sending", "failed", env, on_after_write=_stage_hook)
                     failed += 1
                 else:
                     base_s = int(env.get("base_backoff_seconds") or DEFAULT_BASE_BACKOFF_SECONDS)
                     max_s = int(env.get("max_backoff_seconds") or DEFAULT_MAX_BACKOFF_SECONDS)
                     delay = min(max_s, base_s * (2 ** max(0, attempts - 1)))
                     env["status"] = "pending"
-                    env["next_retry_at"] = (end_dt + datetime.timedelta(seconds=delay)).isoformat()
-                    transition_envelope(inst_cfg, "sending", "pending", env)
+                    env["next_retry_at"] = _shift_seconds(end_dt, delay, tz).isoformat()
+                    transition_envelope(inst_cfg, "sending", "pending", env, on_after_write=_stage_hook)
                     retried += 1
             _update_dedupe_entry(dedupe, env, end_iso)
             save_dedupe(inst_cfg, dedupe)
@@ -440,6 +551,8 @@ def flush(
         "failed": failed,
         "deferred_backoff": deferred_backoff,
         "corrupted": corrupted,
+        "dedupe_health": rec_info["dedupe_health"],
+        "dedupe_rebuilt": rec_info["dedupe_rebuilt"],
     }
 
 
@@ -453,10 +566,13 @@ def retry_failed(
     inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
     now_iso = _now_dt(inst_cfg, now).isoformat()
     requeued = 0
+    dedupe_health = "uninitialized"
+    dedupe_rebuilt = False
     with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
         ensure_layout(inst_cfg)
+        reconcile_duplicate_files(inst_cfg)
+        dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
         fdir = state_subdir(inst_cfg, "failed")
-        dedupe = load_dedupe(inst_cfg)
         for p in sorted(fdir.glob("*.json")):
             if p.name.startswith("corrupt-"):
                 continue
@@ -470,12 +586,17 @@ def retry_failed(
             env["next_retry_at"] = now_iso
             env["updated_at"] = now_iso
             env["last_error"] = "manual-requeue"
-            transition_envelope(inst_cfg, "failed", "pending", env)
+            transition_envelope(inst_cfg, "failed", "pending", env, on_after_write=_stage_hook)
             _update_dedupe_entry(dedupe, env, now_iso)
             requeued += 1
         if requeued:
             save_dedupe(inst_cfg, dedupe)
-    return {"requeued": requeued, "delivery_semantics": DELIVERY_SEMANTICS}
+    return {
+        "requeued": requeued,
+        "delivery_semantics": DELIVERY_SEMANTICS,
+        "dedupe_health": dedupe_health,
+        "dedupe_rebuilt": dedupe_rebuilt,
+    }
 
 
 def archive_old(
@@ -487,12 +608,17 @@ def archive_old(
     """将超过保留天数的 sent/（及可选 failed/）信封归档至 <state>/outbox/archive/YYYY-MM/ 并清理过期冷却键。"""
     inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
     now_dt = _now_dt(inst_cfg, now)
+    now_iso = now_dt.isoformat()
     tz = ZoneInfo(inst_cfg.timezone)
-    cutoff = now_dt - datetime.timedelta(days=max(0, int(retain_days)))
+    cutoff = _shift_seconds(now_dt, -86400 * max(0, int(retain_days)), tz)
     archived = pruned_dedupe = 0
+    dedupe_health = "uninitialized"
+    dedupe_rebuilt = False
 
     with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
         ensure_layout(inst_cfg)
+        reconcile_duplicate_files(inst_cfg)
+        dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
         targets = ("sent", "failed") if include_failed else ("sent",)
         for st in targets:
             sdir = state_subdir(inst_cfg, st)
@@ -503,28 +629,32 @@ def archive_old(
                 if env is None:
                     continue
                 ts_dt = parse_iso(env.get("sent_at") or env.get("updated_at") or env.get("created_at"), tz)
-                if ts_dt is None or ts_dt > cutoff:
+                if ts_dt is None or _utc(ts_dt) > _utc(cutoff):
                     continue
                 ym = ts_dt.strftime("%Y-%m")
-                env["archived_at"] = now_dt.isoformat()
-                transition_envelope(inst_cfg, st, "archive", env, archive_ym=ym)
+                env["archived_at"] = now_iso
+                transition_envelope(inst_cfg, st, "archive", env, archive_ym=ym, on_after_write=_stage_hook)
+                dkey = str(env.get("dedupe_key") or "")
+                if dkey and dedupe.get(dkey, {}).get("message_id") == env.get("message_id"):
+                    _update_dedupe_entry(dedupe, env, now_iso, dir_state="archive")
                 archived += 1
 
-        dedupe = load_dedupe(inst_cfg)
         keep_dedupe: dict[str, dict[str, Any]] = {}
         for k, entry in dedupe.items():
             exp_dt = parse_iso(entry.get("expires_at"), tz)
-            if exp_dt is not None and exp_dt <= now_dt:
+            if exp_dt is not None and _utc(exp_dt) <= _utc(now_dt):
                 pruned_dedupe += 1
                 continue
             keep_dedupe[k] = entry
-        if pruned_dedupe:
+        if pruned_dedupe or archived:
             save_dedupe(inst_cfg, keep_dedupe)
 
     return {
         "archived": archived,
         "pruned_dedupe": pruned_dedupe,
         "delivery_semantics": DELIVERY_SEMANTICS,
+        "dedupe_health": dedupe_health,
+        "dedupe_rebuilt": dedupe_rebuilt,
     }
 
 
@@ -534,6 +664,8 @@ def list_envelopes(cfg: InstanceConfig | str, status: str | None = None) -> dict
     counts: dict[str, int] = {st: 0 for st in (*OUTBOX_STATES, "archive")}
     items_out: list[dict[str, Any]] = []
     root = outbox_dir(inst_cfg)
+    dedupe_health = "uninitialized"
+    corrupted_dedupe_index = False
     if root.is_dir():
         for st in OUTBOX_STATES:
             sdir = state_subdir(inst_cfg, st)
@@ -552,10 +684,19 @@ def list_envelopes(cfg: InstanceConfig | str, status: str | None = None) -> dict
             if status == "archive":
                 for p in afiles:
                     env = load_envelope(p)
-                    if env is not None:
-                        items_out.append(env)
+                    items_out.append(env if env is not None else {"file": p.name, "status": "archive", "corrupted": True})
+        _, dstatus = load_dedupe_status(inst_cfg)
+        corrupted_dedupe_index = dstatus == "corrupt"
+        if dstatus == "corrupt":
+            dedupe_health = "corrupt"
+        elif dstatus == "missing":
+            dedupe_health = "missing_with_envelopes" if sum(counts.values()) > 0 else "uninitialized"
+        else:
+            dedupe_health = "ok"
     return {
         "delivery_semantics": DELIVERY_SEMANTICS,
+        "dedupe_health": dedupe_health,
+        "corrupted_dedupe_index": corrupted_dedupe_index,
         "counts": counts,
         "envelopes": items_out,
     }
