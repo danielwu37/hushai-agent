@@ -157,7 +157,9 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(proc_w.returncode, 0, msg=proc_w.stderr)
         data = json.loads(proc_w.stdout)
         self.assertTrue(data["ok"])
-        self.assertEqual(len(data["units"]), 10)
+        # 向导带了 --remote，所以多出同步定时器两个单元
+        self.assertEqual(len(data["units"]), 12)
+        self.assertTrue(any(str(u).endswith("hushai-wiz-sync.timer") for u in data["units"]))
         self.assertEqual(len(data["doorkit"]), 6)
         wiz_cfg = load_instance_config("wiz")
         self.assertEqual(wiz_cfg.timezone, "Asia/Yangon")
