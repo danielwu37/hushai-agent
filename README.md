@@ -74,7 +74,7 @@
 ```text
 请帮我部署 https://github.com/danielwu37/hushai-agent.git：
 1. 克隆到 /opt/hushai-agent（非 root 用户先创建目录并赋权：sudo mkdir -p /opt/hushai-agent && sudo chown "$USER:$USER" /opt/hushai-agent），将 /opt/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai 并确保 PATH 包含 ~/.local/bin。
-2. 运行初始化向导：hushai install wizard --instance my --vault ~/hushai-vault --timezone Asia/Shanghai --lang zh --steward claude
+2. 先询问我想使用的实例名称（默认为 my）和记忆库路径（默认 ~/hushai-vault），再运行初始化向导：hushai install wizard --instance <实例名> --vault <记忆库路径> --timezone Asia/Shanghai --lang zh --steward claude
 3. 把向导输出的服务端命令（systemd）和体检结果列给我确认后再启用。
 ```
 
@@ -86,7 +86,10 @@ git clone https://github.com/danielwu37/hushai-agent.git /opt/hushai-agent
 mkdir -p ~/.local/bin && ln -sf /opt/hushai-agent/bin/hushai ~/.local/bin/hushai
 export PATH="$HOME/.local/bin:$PATH"
 
-# 一键初始化实例、记忆库、服务单元和端接入包
+# 方式 B-1：交互向导（按提示输入实例名[默认 my] 与记忆库路径[默认 ~/hushai-vault]）
+hushai install wizard
+
+# 方式 B-2：或一行参数直通初始化（可将 my 换成任意小写实例名）
 hushai install wizard --instance my --vault ~/hushai-vault --timezone Asia/Shanghai --lang zh --steward claude
 ```
 
@@ -115,7 +118,7 @@ hushai config
   5. 多端接入与同步（rclone 同步、doorkit、systemd 单元、电脑/手机接入速查）
   6. 第二大脑 (Second-Brain) 设置与操作（开关、引导、Ask、加工、Routine）
   7. 日常查看与待办操作（今日待办、晨间简报、记收件、销待办、批记忆）
-  8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade）
+  8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade/uninstall）
   9. 切换或新建实例
   0. 退出
 ```
@@ -199,6 +202,10 @@ hushai brain onboard --instance my --interactive
 hushai brain ask "为什么当初决定采用纯标准库方案？" --instance my
 hushai brain process --instance my
 hushai brain enable all --instance my    # 手动启用第二大脑定时 routine
+
+# 卸载与环境重置（也可在 hushai config -> 8 -> 8 交互完成）
+hushai uninstall --instance my --with-systemd            # 先演练预览将删内容，确认后加 --yes
+/opt/hushai-agent/bin/hushai-uninstall                   # 独立一键交互卸载 / 彻底重置环境脚本
 ```
 
 查看完整参数帮助：`hushai --help` 或 `hushai brain --help`。

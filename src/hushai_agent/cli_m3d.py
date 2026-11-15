@@ -36,6 +36,7 @@ def register_m3d_commands(subparsers: Any) -> None:
     p_uni.add_argument("--instance", required=True, help="实例名称")
     p_uni.add_argument("--yes", action="store_true", help="确认执行删除本实例目录")
     p_uni.add_argument("--keep-vault", action="store_true", help="保留 vault 数据目录，只删配置与状态目录")
+    p_uni.add_argument("--with-systemd", action="store_true", help="同时停用并删除对应的 /etc/systemd/system/hushai-<实例>-* 单元")
     p_uni.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
 
@@ -73,7 +74,12 @@ def dispatch_m3d_command(args: argparse.Namespace) -> int | None:
         return 0
 
     if args.command == "uninstall":
-        res = lifecycle.run_uninstall(args.instance, yes=args.yes, keep_vault=args.keep_vault)
+        res = lifecycle.run_uninstall(
+            args.instance,
+            yes=args.yes,
+            keep_vault=args.keep_vault,
+            remove_systemd=args.with_systemd,
+        )
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
@@ -83,9 +89,12 @@ def dispatch_m3d_command(args: argparse.Namespace) -> int | None:
                     print(f"  - {t}")
             else:
                 print(f"已删除本实例目录: {', '.join(res['removed'])}")
-            print("如需停用并清理 systemd 服务单元，请手动执行：")
-            for cmd in res["systemd_commands"]:
-                print(f"  {cmd}")
-        return 0
+                if res.get("systemd_removed"):
+                    print(f"已清理 systemd 单元: {', '.join(res['systemd_removed'])}")
+            if not args.with_systemd or res.get("systemd_errors"):
+                print("如需停用并清理 systemd 服务单元，请手动执行：")
+                for cmd in res["systemd_commands"]:
+                    print(f"  {cmd}")
+        return 0 if res.get("ok", True) else 1
 
     return None

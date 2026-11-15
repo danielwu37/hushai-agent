@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""hushAi-agent 一键卸载与环境清理脚本（默认进入交互向导，亦支持 CLI 参数与 --yes）。"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from hushai_agent.lifecycle import uninstall_cli_main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(uninstall_cli_main())

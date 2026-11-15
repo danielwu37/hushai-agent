@@ -29,7 +29,7 @@ def register_m3b_commands(subparsers: Any) -> None:
 
     p_inst = subparsers.add_parser("install", help="生成服务单元、端接入包或运行一站式安装向导")
     p_inst.add_argument("install_command", choices=("units", "doorkit", "wizard"))
-    p_inst.add_argument("--instance", required=True, help="实例名称")
+    p_inst.add_argument("--instance", default=None, help="实例名称（wizard 省略时可交互输入，默认 my）")
     p_inst.add_argument("--out", default=None, help="units/doorkit：输出目录（必须已存在）")
     p_inst.add_argument("--digest-time", default=None, help="每日汇总时间 HH:MM（默认读取既有单元或 21:30）")
     p_inst.add_argument("--memory-max", default=install.DEFAULT_MEMORY_MAX, help="内存上限，如 256M")
@@ -88,11 +88,23 @@ def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
 
     if args.command == "install":
         if args.install_command == "wizard":
-            if not args.vault:
-                raise ValueError("install wizard 需要 --vault")
+            interactive = sys.stdin.isatty() and not args.json
+            inst = args.instance
+            if not inst:
+                if interactive:
+                    inst = input("实例名（小写字母开头，直接回车默认 my）: ").strip() or "my"
+                else:
+                    inst = "my"
+            vault_arg = args.vault
+            if not vault_arg:
+                if interactive:
+                    def_vault = "~/hushai-vault" if inst == "my" else f"~/hushai-vault-{inst}"
+                    vault_arg = input(f"记忆库路径 [回车默认: {def_vault}]: ").strip() or def_vault
+                else:
+                    raise ValueError("install wizard 需要 --vault")
             res = doorkit.run_wizard(
-                instance=args.instance,
-                vault=args.vault,
+                instance=inst,
+                vault=vault_arg,
                 timezone=args.timezone,
                 lang=args.lang,
                 steward=args.steward,
@@ -106,13 +118,15 @@ def dispatch_m3b_command(args: argparse.Namespace) -> int | None:
             if args.json:
                 print(json.dumps(res, ensure_ascii=False, indent=2))
             else:
-                print(f"实例 {args.instance} 已就绪（vault: {res['vault']}）")
+                print(f"实例 {inst} 已就绪（vault: {res['vault']}）")
                 print(f"单元目录: {res['units_dir']}（{len(res['units'])} 个文件）")
                 print(f"端接入包: {res['doorkit_dir']}（{len(res['doorkit'])} 个文件）")
                 print(f"体检结果: {'OK' if res['ok'] else 'FAIL'}")
                 print("\n".join(res["next_steps"]))
             return 0 if res["ok"] else 1
 
+        if not args.instance:
+            raise ValueError(f"install {args.install_command} 需要 --instance")
         if not args.out:
             raise ValueError(f"install {args.install_command} 需要 --out")
         cfg = load_instance_config(args.instance)

@@ -241,6 +241,120 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(res2["ppc_verified"], 0)
         self.assertEqual(len(candidates.load(self.cfg())), 1)
 
+    def test_05_uninstall_script_purge_and_protected_dev_repo(self) -> None:
+        """5. 独立脚本 bin/hushai-uninstall、--with-systemd、install wizard 默认实例名 my 与开发库防误删保护。"""
+        import subprocess
+
+        script_path = Path(__file__).resolve().parent.parent / "bin" / "hushai-uninstall"
+        self.assertTrue(script_path.is_file())
+        self.assertTrue(bool(stat.S_IMODE(script_path.stat().st_mode) & stat.S_IXUSR))
+
+        # 1) install wizard 不传 --instance 时在非交互环境默认使用 my
+        wiz_default_vault = self.base / "wiz-default-my"
+        p_wiz = run_hushai_cli(
+            SRC_DIR,
+            "install", "wizard",
+            "--vault", str(wiz_default_vault),
+            "--no-git",
+            "--json",
+        )
+        self.assertEqual(p_wiz.returncode, 0, msg=p_wiz.stderr)
+        self.assertEqual(json.loads(p_wiz.stdout)["instance"], "my")
+        self.assertTrue((self.base / "config" / "my" / "config.ini").is_file())
+
+        # 2) bin/hushai-uninstall --instance demo --with-systemd --yes 清理 demo 及其 systemd 文件
+        fake_sd = self.base / "sd"
+        wants = fake_sd / "timers.target.wants"
+        wants.mkdir(parents=True)
+        u_demo = fake_sd / "hushai-demo-digest.timer"
+        u_demo.write_text("[Timer]\n", encoding="utf-8")
+        u_link = wants / "hushai-demo-digest.timer"
+        u_link.symlink_to(u_demo)
+        u_my = fake_sd / "hushai-my-heal.timer"
+        u_my.write_text("[Timer]\n", encoding="utf-8")
+
+        env = os.environ.copy()
+        env["HUSHAI_CONFIG_ROOT"] = str(self.base / "config")
+        env["HUSHAI_STATE_ROOT"] = str(self.base / "state")
+        proc1 = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "--instance", "demo",
+                "--yes",
+                "--systemd-dir", str(fake_sd),
+                "--json",
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc1.returncode, 0, msg=proc1.stderr)
+        res1 = json.loads(proc1.stdout)
+        self.assertTrue(res1["ok"])
+        self.assertFalse((self.base / "config" / "demo").exists())
+        self.assertFalse(u_demo.exists())
+        self.assertFalse(u_link.exists())
+        self.assertTrue(u_my.is_file())
+
+        # 3) bin/hushai-uninstall --all --yes 全清，但拒绝误删 /root/hushai-agent，而允许删临时模拟部署目录
+        fake_bin_link = self.base / "local_bin" / "hushai"
+        fake_bin_link.parent.mkdir()
+        fake_bin_link.symlink_to(script_path.parent / "hushai")
+
+        proc_guard = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "--all",
+                "--yes",
+                "--remove-bin-link",
+                "--remove-app",
+                "--systemd-dir", str(fake_sd),
+                "--bin-link", str(fake_bin_link),
+                "--app-dir", "/root/hushai-agent",
+                "--json",
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc_guard.returncode, 0, msg=proc_guard.stderr)
+        res_guard = json.loads(proc_guard.stdout)
+        self.assertFalse(res_guard["app_dir_removed"])
+        self.assertIn("开发仓库", res_guard["app_dir_skipped_reason"])
+        self.assertTrue(Path("/root/hushai-agent/README.md").is_file())
+        self.assertFalse(fake_bin_link.exists())
+        self.assertFalse(u_my.exists())
+        self.assertFalse(wiz_default_vault.exists())
+
+        # 4) 允许删除受识别的隔离部署目录（含 bin/hushai）
+        fake_opt_app = self.base / "opt" / "hushai-agent"
+        (fake_opt_app / "bin").mkdir(parents=True)
+        (fake_opt_app / "bin" / "hushai").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        proc_app = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                "--all",
+                "--yes",
+                "--remove-app",
+                "--systemd-dir", str(fake_sd),
+                "--bin-link", str(fake_bin_link),
+                "--app-dir", str(fake_opt_app),
+                "--json",
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc_app.returncode, 0, msg=proc_app.stderr)
+        self.assertTrue(json.loads(proc_app.stdout)["app_dir_removed"])
+        self.assertFalse(fake_opt_app.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

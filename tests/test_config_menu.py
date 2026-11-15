@@ -269,6 +269,79 @@ class TestConfigMenu(unittest.TestCase):
         self.assertIn("上午完成了接口联调", daily_md)
         self.assertIn("晚上补充了回归用例", daily_md)
 
+    def test_08_interactive_wizard_default_and_menu_uninstall(self) -> None:
+        from unittest import mock
+        from hushai_agent import lifecycle
+
+        fake_home = self.base / "home"
+        fake_home.mkdir()
+        fake_sd = self.base / "fake_systemd"
+        fake_wants = fake_sd / "timers.target.wants"
+        fake_wants.mkdir(parents=True)
+        fake_app = self.base / "fake_opt_app"
+        fake_app.mkdir()
+
+        # 1) 无任何实例时进入 hushai config -> 1 立即初始化 -> 回车接受默认实例名 my -> 8 -> 8 卸载
+        sd_unit = fake_sd / "hushai-my-digest.timer"
+        sd_unit.write_text("[Timer]\n", encoding="utf-8")
+        sd_link = fake_wants / "hushai-my-digest.timer"
+        sd_link.symlink_to(sd_unit)
+
+        vault_my = self.base / "v_my"
+        script_1 = [
+            "1",
+            "",  # 默认实例名 my
+            str(vault_my),
+            "",  # 默认时区
+            "",  # 默认语言
+            "",  # 默认 steward
+            "",  # remote 空
+            # 先测试确认名错误会取消，再正式卸载 my（不保留 vault，清理 systemd）
+            "8", "8", "1", "y", "y", "wrong-name",
+            "8", "1", "n", "y", "my",
+        ]
+        with mock.patch.dict(os.environ, {"HOME": str(fake_home)}), \
+             mock.patch.object(lifecycle, "DEFAULT_SYSTEMD_DIR", fake_sd), \
+             mock.patch.object(lifecycle, "DEFAULT_DEPLOY_APP_DIR", fake_app):
+            rc, out = self._run_script(script_1)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("实例 my 初始化完成", out)
+        self.assertIn("确认名称不匹配，已取消卸载", out)
+        self.assertIn("当前实例已卸载，已无剩余实例，已退出设置中心", out)
+        self.assertFalse(get_instance_config_dir("my").exists())
+        self.assertFalse(vault_my.exists())
+        self.assertFalse(sd_unit.exists())
+        self.assertFalse(sd_link.exists())
+
+        # 2) 多实例：先在菜单 8->8->1 卸载 a 并切到 b，再用 8->8->2 RESET 全清 + 删除软链
+        init_instance("a", self.base / "va", no_git=True)
+        init_instance("b", self.base / "vb", no_git=True)
+        bin_link = fake_home / ".local" / "bin" / "hushai"
+        bin_link.parent.mkdir(parents=True, exist_ok=True)
+        bin_target = self.base / "dummy_bin"
+        bin_target.write_text("#!/bin/sh\n", encoding="utf-8")
+        bin_link.symlink_to(bin_target)
+        (fake_sd / "hushai-b-heal.service").write_text("[Service]\n", encoding="utf-8")
+
+        script_2 = [
+            "1",  # 多实例列表先选 a
+            "8", "8", "1", "n", "y", "a",  # 卸载 a -> 回到多实例只剩 b 自动切换为 b
+            "8", "8", "2", "n", "y", "y", "RESET",  # 一键重置全清（含 b 的 vault、systemd、bin_link，保留 fake_app）
+        ]
+        with mock.patch.dict(os.environ, {"HOME": str(fake_home)}), \
+             mock.patch.object(lifecycle, "DEFAULT_SYSTEMD_DIR", fake_sd), \
+             mock.patch.object(lifecycle, "DEFAULT_DEPLOY_APP_DIR", fake_app):
+            rc2, out2 = self._run_script(script_2)
+
+        self.assertEqual(rc2, 0)
+        self.assertFalse(get_instance_config_dir("a").exists())
+        self.assertFalse((self.base / "va").exists())
+        self.assertFalse(get_instance_config_dir("b").exists())
+        self.assertFalse((self.base / "vb").exists())
+        self.assertFalse((fake_sd / "hushai-b-heal.service").exists())
+        self.assertFalse(bin_link.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -139,9 +139,12 @@ hushai export --instance demo --out ~/hushai-demo-backup.tar.gz
 # 2. 升级框架托管规则模板（只更新 AGENTS.md 等模板，绝不碰 profile.md、AGENTS.local.md 与收件数据）
 hushai upgrade --instance demo
 
-# 3. 卸载实例（不加 --yes 先演练查看将删目录与 systemd 命令；加 --yes 执行清理）
+# 3. 卸载实例（不加 --yes 先演练查看将删目录与 systemd 命令；加 --yes 执行清理；加 --with-systemd 一并清理 systemd 文件）
 hushai uninstall --instance demo
-hushai uninstall --instance demo --yes
+hushai uninstall --instance demo --yes --with-systemd
+
+# 4. 独立一键卸载 / 彻底重置脚本（交互引导选择单实例卸载或全清恢复从零部署状态；亦可在 hushai config 菜单 8 -> 8 触发）
+/opt/hushai-agent/bin/hushai-uninstall
 ```
 
 ---

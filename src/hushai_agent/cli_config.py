@@ -133,8 +133,11 @@ def _run_guarded(io: MenuIO, action: Callable[[], None]) -> None:
 
 def _wizard_create_interactive(io: MenuIO, preset_instance: str | None = None) -> str | None:
     io.write("\n--- 初始化新实例（向导）---")
-    inst = (preset_instance or io.read_line("实例名（小写字母开头，如 my）: ").strip()).strip()
-    if not inst:
+    if preset_instance is not None:
+        inst = preset_instance.strip()
+    else:
+        inst = _prompt(io, "实例名（小写字母开头，输入 0 取消）", default="my").strip()
+    if not inst or inst == "0":
         io.write("已取消初始化。")
         return None
     vault_default = str(Path.home() / f"hushai-vault-{inst}" if inst != "my" else Path.home() / "hushai-vault")
@@ -205,6 +208,7 @@ def _menu_loop(
     title: str,
     render_summary: Callable[[], list[str]],
     items: list[tuple[str, Callable[[], None]]],
+    stop_when: Callable[[], bool] | None = None,
 ) -> None:
     while True:
         io.write(f"\n--- {title} ---")
@@ -218,6 +222,8 @@ def _menu_loop(
             return
         if raw.isdigit() and 1 <= int(raw) <= len(items):
             _run_guarded(io, items[int(raw) - 1][1])
+            if stop_when and stop_when():
+                return
         else:
             io.write("请输入有效编号。")
 
@@ -916,6 +922,9 @@ def _submenu_maintenance(io: MenuIO, inst: str) -> None:
         res = lifecycle.run_upgrade(load_instance_config(inst))
         io.write("✓ 已更新模板: " + ", ".join(res["updated"]) if res["updated"] else "✓ 框架模板已是最新。")
 
+    def do_uninstall() -> None:
+        lifecycle.interactive_uninstall(io.read_line, io.write, current_instance=inst)
+
     _menu_loop(
         io,
         "8. 手动触发整理与系统维护",
@@ -928,7 +937,9 @@ def _submenu_maintenance(io: MenuIO, inst: str) -> None:
             ("全面体检实例 (doctor)", do_doctor),
             ("全量导出备份 (export)", do_export),
             ("升级框架托管模板 (upgrade)", do_upgrade),
+            ("一键卸载当前实例或彻底重置环境 (uninstall)", do_uninstall),
         ],
+        stop_when=lambda: not get_instance_config_file(inst).is_file(),
     )
 
 
@@ -959,7 +970,7 @@ def run_config_menu(instance: str | None = None, io: MenuIO | None = None) -> in
             cio.write("  5. 多端接入与同步（rclone 同步、doorkit、systemd 单元、电脑/手机接入速查）")
             cio.write("  6. 第二大脑 (Second-Brain) 设置与操作（开关、引导、Ask、加工、Routine）")
             cio.write("  7. 日常查看与待办操作（今日待办、晨间简报、记收件、销待办、批记忆）")
-            cio.write("  8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade）")
+            cio.write("  8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade/uninstall）")
             cio.write("  9. 切换或新建实例")
             cio.write("  0. 退出")
 
@@ -983,6 +994,15 @@ def run_config_menu(instance: str | None = None, io: MenuIO | None = None) -> in
                 _submenu_daily_ops(cio, current)
             elif choice == "8":
                 _submenu_maintenance(cio, current)
+                if not get_instance_config_file(current).is_file():
+                    remaining = list_instances()
+                    if not remaining:
+                        cio.write("当前实例已卸载，已无剩余实例，已退出设置中心。")
+                        return 0
+                    picked = _select_initial_instance(cio, None)
+                    if not picked:
+                        return 0
+                    current = picked
             elif choice == "9":
                 picked = _select_initial_instance(cio, None)
                 if picked:
