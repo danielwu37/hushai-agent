@@ -151,7 +151,22 @@ def _report_needs_human(cfg: InstanceConfig, item: dict[str, Any]) -> str | None
     x_part = f"{item['name']}（{item.get('problem', '异常')}）"
     y_part = item.get("suggestion") or "人工排查日志与服务状态"
     alert_line = f"- 系统：{x_part}坏了，建议{y_part}"
-    _prepend_today_alert(cfg, alert_line)
+
+    from hushai_agent import outbox
+
+    enq = outbox.enqueue(
+        cfg,
+        channel="today_alert",
+        target=cfg.steward_door,
+        payload={"alert_line": alert_line, "problem_key": key},
+        dedupe_key=f"heal-alert:{key}",
+        cooldown_seconds=ALERT_COOLDOWN_SECONDS,
+    )
+    if enq.get("deduplicated"):
+        return None
+    flush_res = outbox.flush(cfg, channel_filter="today_alert")
+    if int(flush_res.get("sent") or 0) <= 0:
+        return None
 
     alerts[key] = now_dt.isoformat()
     atomic_write(alerts_file, json.dumps(alerts, ensure_ascii=False, indent=2) + "\n", [state_dir])
@@ -183,37 +198,44 @@ def run_heal(
 
 
 def _recover_abandoned_state(inst_cfg: InstanceConfig) -> dict[str, int]:
-    """无阻塞尝试接管遗留的半程崩溃检查点或锁冲突期间积压的事件。"""
-    from hushai_agent import checkpoint, lock
+    """无阻塞尝试接管遗留的半程崩溃检查点、锁冲突积压事件与 Outbox 待投递信封。"""
+    from hushai_agent import checkpoint, lock, outbox
     from hushai_agent.config_ext import load_ext
 
-    summary = {"checkpoints_recovered": 0, "routes_recovered": 0}
-    if not checkpoint.has_pending(inst_cfg):
-        return summary
-    try:
-        with lock.runner_lock(inst_cfg, name="runner.lock", wait_seconds=0.0):
-            rec = checkpoint.recover_pending(inst_cfg)
-            summary["checkpoints_recovered"] = int(rec.get("recovered") or 0)
-            dirty = lock.clear_dirty(inst_cfg, "mechanical")
-            if rec.get("recovered") or dirty:
-                from hushai_agent.reconcile import _run_mechanical_locked
+    summary = {"checkpoints_recovered": 0, "routes_recovered": 0, "outbox_sent": 0, "outbox_recovered": 0}
+    if checkpoint.has_pending(inst_cfg):
+        try:
+            with lock.runner_lock(inst_cfg, name="runner.lock", wait_seconds=0.0):
+                rec = checkpoint.recover_pending(inst_cfg)
+                summary["checkpoints_recovered"] = int(rec.get("recovered") or 0)
+                dirty = lock.clear_dirty(inst_cfg, "mechanical")
+                if rec.get("recovered") or dirty:
+                    from hushai_agent.reconcile import _run_mechanical_locked
 
-                _run_mechanical_locked(inst_cfg)
-    except (lock.LockBusy, Exception):
-        pass
+                    _run_mechanical_locked(inst_cfg)
+        except (lock.LockBusy, Exception):
+            pass
 
-    ext = load_ext(inst_cfg)
-    try:
-        with lock.runner_lock(inst_cfg, name="route.lock", wait_seconds=0.0):
-            rec_r = checkpoint.recover_pending_routes(inst_cfg)
-            summary["routes_recovered"] = int(rec_r or 0)
-            dirty_r = lock.clear_dirty(inst_cfg, "routing")
-            if ext.routing_enabled and (rec_r or dirty_r):
-                from hushai_agent.routing import _run_routing_locked
+        ext = load_ext(inst_cfg)
+        try:
+            with lock.runner_lock(inst_cfg, name="route.lock", wait_seconds=0.0):
+                rec_r = checkpoint.recover_pending_routes(inst_cfg)
+                summary["routes_recovered"] = int(rec_r or 0)
+                dirty_r = lock.clear_dirty(inst_cfg, "routing")
+                if ext.routing_enabled and (rec_r or dirty_r):
+                    from hushai_agent.routing import _run_routing_locked
 
-                _run_routing_locked(inst_cfg, ext)
-    except (lock.LockBusy, Exception):
-        pass
+                    _run_routing_locked(inst_cfg, ext)
+        except (lock.LockBusy, Exception):
+            pass
+
+    if outbox.has_pending_or_sending(inst_cfg):
+        try:
+            ob_res = outbox.flush(inst_cfg)
+            summary["outbox_sent"] = int(ob_res.get("sent") or 0)
+            summary["outbox_recovered"] = int(ob_res.get("recovered") or 0)
+        except (lock.LockBusy, Exception):
+            pass
     return summary
 
 

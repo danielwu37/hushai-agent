@@ -140,6 +140,9 @@ def check_inbox(cfg: InstanceConfig, door: str, ack: bool = False) -> dict[str, 
     if ack and files:
         seen.update({f["path"]: f["_sig"] for f in files})
         atomic_write(seen_path, json.dumps(seen, ensure_ascii=False, indent=1) + "\n", [state_dir])
+        from hushai_agent import outbox
+
+        outbox.mark_acked_by_rel_paths(cfg, door, [str(f["path"]) for f in files])
     for f in files:
         del f["_sig"]
     return {"files": files, "count": len(files)}

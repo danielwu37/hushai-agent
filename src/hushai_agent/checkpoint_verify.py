@@ -249,6 +249,17 @@ def verify_routing_targets(cfg: InstanceConfig, spec: dict[str, Any]) -> None:
         row_payload = {"line_id": line_id, "target": target, "ts": str(spec["ts"]), "result": "ok"}
         append_line(routed_path, json.dumps(row_payload, ensure_ascii=False), [state_dir])
 
+    from hushai_agent import outbox
+
+    outbox.enqueue(
+        cfg,
+        channel="exchange_out",
+        target=target_door,
+        payload={"rel_path": reply_rel, "line_id": line_id, "target": target},
+        dedupe_key=f"route:{line_id}:{reply_rel}",
+        immediate_sent=True,
+    )
+
 
 def unlink_if_exists(path: Path, roots: list[Path]) -> None:
     """按路径护栏安全删除已完成校验的检查点文件。"""

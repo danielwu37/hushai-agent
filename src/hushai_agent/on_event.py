@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hushai_agent import clock, digest, ledger, routing
+from hushai_agent import clock, digest, ledger, outbox, routing
 from hushai_agent.config import InstanceConfig
 from hushai_agent.config_ext import load_ext
 
@@ -33,4 +33,9 @@ def handle(cfg: InstanceConfig) -> dict[str, Any]:
         out["routing"] = routing.run(cfg, ext) if ext.routing_enabled else {"skipped": "disabled"}
     except Exception as exc:
         out["routing"] = _note_failure(cfg, "routing", exc)
+    try:
+        if outbox.has_pending_or_sending(cfg):
+            out["outbox"] = outbox.flush(cfg)
+    except Exception as exc:
+        out["outbox"] = _note_failure(cfg, "outbox", exc)
     return out
