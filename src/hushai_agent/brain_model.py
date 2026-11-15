@@ -29,12 +29,13 @@ INDEX_LINE_RE = re.compile(
 )
 DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
-STOP_CJK = frozenset("的了在是我有和与这那个人们也都要会去来把被让给对从到及或并而但又很更最")
+STOP_CJK = frozenset("的了在是我有和与这那个人们也都要会去来把被让给对从到及或并而但又很更最吗呢吧啊么多什怎哪谁")
 STOP_EN = frozenset(
     {
         "the", "and", "for", "that", "this", "with", "from", "are", "was", "were",
         "have", "has", "had", "not", "but", "you", "your", "about", "what", "when",
         "where", "which", "who", "how", "why", "into", "onto", "over", "under",
+        "unverified", "verified", "true", "false", "null", "none", "https", "http",
     }
 )
 
@@ -88,6 +89,8 @@ def allocate_unique_path(directory: Path, stem: str) -> Path:
 def tokenize_text(text: str) -> set[str]:
     """提取中英文检索/相似度词元（英文词元 + CJK 二元组与实词单字）。"""
     raw = str(text or "").lower()
+    raw = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", raw)
+    raw = re.sub(r"\bl-\d{8}-[a-z0-9_-]+\b", " ", raw)
     tokens: set[str] = set()
     for word in re.findall(r"[a-z0-9][a-z0-9_-]*", raw):
         if len(word) >= 2 and word not in STOP_EN:
@@ -546,6 +549,23 @@ def check_brain_links(cfg: InstanceConfig, min_links: int = 2) -> dict[str, Any]
     }
 
 
+def extract_semantic_body(text: str) -> str:
+    """提取笔记的正文语义部分（剔除顶部元数据行、关联笔记章节与 UNVERIFIED 占位）。"""
+    parsed = parse_note_sections(text)
+    parts: list[str] = []
+    if parsed["title"]:
+        parts.append(parsed["title"])
+    for sec_name, lines in parsed["sections"].items():
+        if sec_name in ("_head", "关联笔记"):
+            continue
+        for ln in lines:
+            s = ln.strip()
+            if not s or UNVERIFIED in s or "（待补关联链接" in s:
+                continue
+            parts.append(s)
+    return "\n".join(parts)
+
+
 def auto_link_notes(
     cfg: InstanceConfig,
     min_links: int = 2,
@@ -562,7 +582,7 @@ def auto_link_notes(
         parsed = parse_note_sections(txt)
         title = parsed["title"] or p.stem
         rel = p.relative_to(hub_dir).as_posix()
-        toks = tokenize_text(f"{title}\n{txt}")
+        toks = tokenize_text(extract_semantic_body(txt))
         pool_info.append((p, rel, title, toks))
 
     auto_linked: list[dict[str, Any]] = []
@@ -583,7 +603,7 @@ def auto_link_notes(
         if len(existing_valid) >= min_links:
             continue
 
-        self_toks = tokenize_text(f"{parsed['title']}\n{txt}")
+        self_toks = tokenize_text(extract_semantic_body(txt))
         scored: list[tuple[float, list[str], Path, str, str]] = []
         for cand_p, cand_rel, cand_title, cand_toks in pool_info:
             if cand_rel == rel or cand_rel in existing_valid:

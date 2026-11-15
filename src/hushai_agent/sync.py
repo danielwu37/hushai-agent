@@ -21,6 +21,13 @@ PUSH_INCLUDES = (
     "/insights.md",
     "/decisions.md",
     "/lessons.md",
+    "/index.md",
+    "/weekly.md",
+    "/notes/**",
+    "/sources/**",
+    "/people/**",
+    "/projects/**",
+    "/daily/**",
     "/reports/**",
     "/exchange/out/**",
 )

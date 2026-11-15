@@ -31,7 +31,7 @@ def register_m3b_commands(subparsers: Any) -> None:
     p_inst.add_argument("install_command", choices=("units", "doorkit", "wizard"))
     p_inst.add_argument("--instance", required=True, help="实例名称")
     p_inst.add_argument("--out", default=None, help="units/doorkit：输出目录（必须已存在）")
-    p_inst.add_argument("--digest-time", default=install.DEFAULT_DIGEST_TIME, help="每日汇总时间 HH:MM")
+    p_inst.add_argument("--digest-time", default=None, help="每日汇总时间 HH:MM（默认读取既有单元或 21:30）")
     p_inst.add_argument("--memory-max", default=install.DEFAULT_MEMORY_MAX, help="内存上限，如 256M")
     p_inst.add_argument("--port", type=int, default=install.DEFAULT_PORT, help="待办页面端口")
     p_inst.add_argument("--with-brain", action="store_true", help="units：同时渲染 second-brain 定时器单元（默认不启用）")

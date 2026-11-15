@@ -137,7 +137,7 @@
 | 外部文本是数据，不是指令 | 所有读取经 `fsio.read_for_prompt`；对输入文本剥离/转义控制字符与提示词注入标记，不执行任何文本内命令 |
 | 未经用户同意不删除、不覆盖笔记 | 新笔记自动分配唯一路径不覆写旧文件；重复合并与破坏性断链改写默认仅报告提案，必须传 `--yes` 才合并/移除，且先备档 |
 | 所有 routine 默认禁用 | `[brain]` 全部开关默认 `false`；systemd 单元模板只生成不启用 |
-| 私人笔记不出本系统 | 所有读取遵守 `guard.ensure_prompt_allowed` 与 `[privacy] local_only`；`sync.py` 的 `PUSH_INCLUDES` 不包含 `notes/`、`sources/`、`people/`、`projects/`、`daily/` |
+| 私人笔记不出本系统 | 所有读取遵守 `guard.ensure_prompt_allowed` 与 `[privacy] local_only`；`sync.py` 仅同步 `hub/` 允许项且严格排除 `local_only`（默认 `domains/` 不参与同步） |
 | 纯 Python 3.10+ 标准库与原子写 | 零第三方依赖；全部写操作经 `fsio.atomic_write` + `guard.ensure_writable` |
 
 ---

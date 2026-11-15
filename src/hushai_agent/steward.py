@@ -44,18 +44,12 @@ def set_backend(cfg: InstanceConfig, backend: str) -> str:
     """更新 config.ini 中的 [steward] backend 并记录切换时间，返回切换前的值。"""
     if backend not in VALID_BACKENDS:
         raise ConfigError(f"不支持的管家后端: {backend}（仅支持 claude 或 agy）")
+    from hushai_agent.config_edit import update_ini_sections
+
     prev = get_backend(cfg)
     cfg_dir = get_instance_config_dir(cfg.name)
     cfg_file = get_instance_config_file(cfg.name)
-    text = cfg_file.read_text(encoding="utf-8")
-    if re.search(r"(?m)^\[steward\]\s*$", text):
-        if re.search(r"(?m)^backend\s*=.*$", text):
-            text = re.sub(r"(?m)^backend\s*=.*$", f"backend = {backend}", text, count=1)
-        else:
-            text = re.sub(r"(?m)^(\[steward\]\s*)$", f"\\1\nbackend = {backend}", text, count=1)
-    else:
-        text = text.rstrip("\n") + f"\n\n[steward]\nbackend = {backend}\n"
-    atomic_write(cfg_file, text, [cfg_dir])
+    update_ini_sections(cfg_file, cfg_dir, {"steward": {"backend": backend}})
 
     state_dir = get_instance_state_dir(cfg.name)
     state_payload = {"backend": backend, "previous_backend": prev, "switched_at": clock.now(cfg).isoformat()}

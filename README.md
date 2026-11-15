@@ -132,7 +132,7 @@ hushai config
 | 使用工具 | 接入方法 | 实现效果 |
 | --- | --- | --- |
 | **Claude Code / Antigravity (`agy`)** | 1. 在菜单 `2` 将 `office`、`laptop` 加入已知接入端；<br>2. 在菜单 `5` 生成对应 `doorkit`（附 `SessionStart`/`Stop` 钩子模板）；<br>3. 远端电脑通过 SSH 强制命令连接服务器 `hushai gate ssh`。 | 每次在任意一台电脑打开终端 AI，自动同步最新简报和待收消息；退出会话自动记录产出与待办，公司和家里无缝接力。 |
-| **Obsidian / 本地文本编辑器** | 在菜单 `5` 配置 `[sync]` 远端（如 `onedrive:hushai-vault`），开启 `rclone` 按归属单向同步。 | 服务器把整理好的 `today.md`、`index.md`、`notes/`、`reports/` 推向网盘，本地电脑只往自己所属端写文件，永不冲突覆盖；`local_only`（如 `domains/health`）绝不上云。 |
+| **Obsidian / 本地文本编辑器** | 在菜单 `5` 配置 `[sync]` 远端（如 `onedrive:hushai-vault`），通过 `hushai sync` 或菜单第 `5 → 2` 项执行按归属单向同步（不自带后台定时任务，可按需加入 cron）。 | 服务器把整理好的 `today.md`、`index.md`、`notes/`、`sources/`、`people/`、`projects/`、`daily/`、`weekly.md`、`reports/` 推向网盘，本地电脑只往自己所属端写文件，永不冲突覆盖；`local_only`（如 `domains/health`）与 `domains/` 绝不上云。 |
 
 ### 2. 手机端（Claude、Muse、Duet 与浏览器）
 
@@ -210,7 +210,7 @@ hushai brain enable all --instance my    # 手动启用第二大脑定时 routin
 - **Claude 远程会话继承服务器全局配置**：`claude` 远程会话模式会读取同账号全局 `~/.claude/` 配置；推荐为 `hushai` 分配专用用户或专用服务目录以隔离规则。
 - **「Claude 额度耗尽自动切 `agy`」在测试桩验证通过，真实生产账单报错样式仍在持续跟踪**：手动与菜单切换（`hushai steward use agy`）经实际验证可靠。
 - **ChatGPT 等封闭云端应用**尚未开放本地闸门直连，现阶段需通过复制投递至 `hub/exchange/in/` 或由管家转存。
-- **Second-Brain 所有周期 Routine 默认处于禁用状态**：安装与升级不会擅自开启后台自动写入，也不会未经 `--yes` 同意擅自删除或合并任何已有笔记。
+- **Second-Brain 所有周期 Routine 默认处于禁用状态**：安装与升级不会擅自开启后台自动写入，也不会未经 `--yes` 同意擅自删除或合并任何已有笔记。启用 `monthly` 或修改第二大脑时间参数后，需在菜单 `5` 或 `hushai install units --with-brain` 重新生成并启用对应 systemd 定时器；人物与项目档案按显式 `人物：`/`项目：`/`@姓名` 前缀触发提取。
 
 ---
 

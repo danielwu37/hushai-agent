@@ -86,7 +86,7 @@ def _split_long_chunks(text: str) -> list[str]:
 def _extract_title(text: str, max_len: int = 36) -> str:
     first_line = sanitize_single_line(text.splitlines()[0] if text.splitlines() else text)
     first_sent = re.split(r"[。！？!?；;]", first_line)[0].strip()
-    candidate = URL_RE.sub("", first_sent).strip(" ：:-")
+    candidate = re.sub(r"\s+", " ", URL_RE.sub(" ", first_sent)).strip(" ：:-")
     if not candidate:
         candidate = first_sent[:max_len]
     return candidate[:max_len].strip() or "未命名笔记"

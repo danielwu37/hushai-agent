@@ -42,7 +42,7 @@ def _csv(raw: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
-def _int(parser: configparser.ConfigParser, sec: str, key: str, default: int) -> int:
+def _int(parser: configparser.ConfigParser, sec: str, key: str, default: int, allow_zero: bool = True) -> int:
     raw = parser.get(sec, key, fallback="").strip()
     if not raw:
         return default
@@ -50,8 +50,10 @@ def _int(parser: configparser.ConfigParser, sec: str, key: str, default: int) ->
         val = int(raw)
     except ValueError as exc:
         raise ConfigError(f"配置中 {sec}.{key} 必须为整数: {raw}") from exc
-    if val < 0:
+    if allow_zero and val < 0:
         raise ConfigError(f"配置中 {sec}.{key} 不能小于 0: {val}")
+    if not allow_zero and val <= 0:
+        raise ConfigError(f"配置中 {sec}.{key} 必须大于 0: {val}")
     return val
 
 
@@ -84,17 +86,17 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
 
     sync_tool = parser.get("sync", "tool", fallback="").strip() or DEFAULT_SYNC_TOOL
     sync_remote = parser.get("sync", "remote", fallback="").strip()
-    sync_timeout = _int(parser, "sync", "timeout", DEFAULT_SYNC_TIMEOUT) or DEFAULT_SYNC_TIMEOUT
+    sync_timeout = _int(parser, "sync", "timeout", DEFAULT_SYNC_TIMEOUT, allow_zero=False)
 
     return ExtConfig(
         exchange_ext=exchange_ext,
-        exchange_max_kb=_int(parser, "gate", "exchange_max_kb", DEFAULT_EXCHANGE_MAX_KB),
+        exchange_max_kb=_int(parser, "gate", "exchange_max_kb", DEFAULT_EXCHANGE_MAX_KB, allow_zero=False),
         routing_enabled=enabled_raw in ("true", "1", "yes", "on"),
         trusted_doors=_csv(parser.get("routing", "trusted_doors", fallback="")),
         routing_max_daily=_int(parser, "routing", "max_daily", DEFAULT_ROUTING_MAX_DAILY),
         routing_chains=chains,
         approval_doors=approval,
-        candidates_pending=_int(parser, "limits", "candidates_pending", DEFAULT_CANDIDATES_PENDING),
+        candidates_pending=_int(parser, "limits", "candidates_pending", DEFAULT_CANDIDATES_PENDING, allow_zero=False),
         sync_tool=sync_tool,
         sync_remote=sync_remote,
         sync_timeout=sync_timeout,

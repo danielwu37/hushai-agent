@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from hushai_agent.paths import (
     get_instance_config_file,
     is_valid_instance_name,
 )
+from hushai_agent.validate import check_inbox_lines, check_vault_structure
 
 
 def list_instances() -> list[str]:
@@ -32,7 +34,11 @@ def update_ini_text(
     raw_text: str,
     section_updates: dict[str, dict[str, str | None]],
 ) -> str:
-    """在尽量保留原有注释和格式的前提下，更新 INI 多节键值；值为 None 表示删除该键。"""
+    """在尽量保留原有注释和格式的前提下，更新 INI 多节键值；值为 None 表示删除该键（键名大小写不敏感匹配）。"""
+    norm_updates: dict[str, dict[str, tuple[str, str | None]]] = {
+        sec: {k.lower(): (k, v) for k, v in kv_map.items()}
+        for sec, kv_map in section_updates.items()
+    }
     lines = raw_text.splitlines()
     out: list[str] = []
     current_sec: str | None = None
@@ -40,12 +46,12 @@ def update_ini_text(
     seen_keys: dict[str, set[str]] = {sec: set() for sec in section_updates}
 
     def _flush_remaining(sec: str | None) -> None:
-        if not sec or sec not in section_updates:
+        if not sec or sec not in norm_updates:
             return
-        for k, v in section_updates[sec].items():
-            if k not in seen_keys[sec] and v is not None:
-                out.append(f"{k} = {v}")
-                seen_keys[sec].add(k)
+        for k_low, (orig_k, v) in norm_updates[sec].items():
+            if k_low not in seen_keys[sec] and v is not None:
+                out.append(f"{orig_k} = {v}")
+                seen_keys[sec].add(k_low)
 
     for line in lines:
         stripped = line.strip()
@@ -57,13 +63,14 @@ def update_ini_text(
             out.append(line)
             continue
 
-        if current_sec in section_updates and "=" in line and not stripped.startswith(("#", ";")):
-            k = line.split("=", 1)[0].strip()
-            if k in section_updates[current_sec]:
-                new_val = section_updates[current_sec][k]
-                seen_keys[current_sec].add(k)
+        if current_sec in norm_updates and "=" in line and not stripped.startswith(("#", ";")):
+            raw_k = line.split("=", 1)[0].strip()
+            k_low = raw_k.lower()
+            if k_low in norm_updates[current_sec]:
+                orig_k, new_val = norm_updates[current_sec][k_low]
+                seen_keys[current_sec].add(k_low)
                 if new_val is not None:
-                    out.append(f"{k} = {new_val}")
+                    out.append(f"{orig_k} = {new_val}")
                 continue
         out.append(line)
 
@@ -96,11 +103,57 @@ def update_ini_sections(
     return new_text
 
 
+def validate_cross_constraints(
+    cfg: InstanceConfig,
+    ext: ExtConfig,
+    changed_sections: set[str] | None = None,
+) -> None:
+    """校验跨节业务约束（vault 结构、local_only 路径、适配器引用、审批端归属与既有收件领域兼容）。"""
+    vs = check_vault_structure(cfg.vault)
+    if vs.level == "FAIL":
+        raise ConfigError(f"记忆库路径无效或尚未初始化: {vs.message}")
+
+    invalid_lo: list[str] = []
+    for rel in cfg.local_only:
+        rel_path = Path(rel)
+        parts = rel.replace("\\", "/").split("/")
+        if rel_path.is_absolute() or os.path.isabs(rel) or ".." in rel_path.parts or ".." in parts:
+            invalid_lo.append(rel)
+    if invalid_lo:
+        raise ConfigError(f"local_only 路径非法（不能为绝对路径或包含 ..）: {', '.join(invalid_lo)}")
+
+    for job_name, chain in cfg.jobs.items():
+        for adapter_name, _ in chain:
+            if adapter_name not in cfg.adapters:
+                raise ConfigError(f"[jobs].{job_name} 引用了未配置的适配器: {adapter_name}")
+
+    if cfg.dispatch_adapter and cfg.dispatch_adapter not in cfg.adapters:
+        raise ConfigError(f"[jobs].dispatch 引用了未配置的适配器: {cfg.dispatch_adapter}")
+
+    for target_door, chain in ext.routing_chains.items():
+        for adapter_name, _ in chain:
+            if adapter_name not in cfg.adapters:
+                raise ConfigError(f"[routing].{target_door} 引用了未配置的适配器: {adapter_name}")
+
+    unknown_app = [d for d in ext.approval_doors if d not in cfg.known_doors]
+    if unknown_app:
+        raise ConfigError(f"[approval].doors 必须全部包含在 [doors].known 中，未知端: {', '.join(unknown_app)}")
+
+    unknown_trusted = [d for d in ext.trusted_doors if d not in cfg.known_doors]
+    if unknown_trusted:
+        raise ConfigError(f"[routing].trusted_doors 必须全部包含在 [doors].known 中，未知端: {', '.join(unknown_trusted)}")
+
+    if changed_sections is None or "domains" in changed_sections or "instance" in changed_sections:
+        inbox_chk = check_inbox_lines(cfg.vault, allowed_domains=cfg.allowed_domains)
+        if inbox_chk.level == "FAIL":
+            raise ConfigError(f"修改后的领域与既有收件记录冲突: {inbox_chk.message}")
+
+
 def apply_config_updates(
     instance: str,
     section_updates: dict[str, dict[str, str | None]],
 ) -> tuple[InstanceConfig, ExtConfig, Any]:
-    """原子修改实例 config.ini 并全量校验；若配置非法则自动回滚原文件。"""
+    """原子修改实例 config.ini 并全量校验（含跨节约束）；若配置非法则自动回滚原文件。"""
     from hushai_agent.brain_cfg import load_brain_config
 
     cfg_file = get_instance_config_file(instance)
@@ -112,6 +165,7 @@ def apply_config_updates(
         new_cfg = load_instance_config(instance)
         new_ext = load_ext(new_cfg)
         new_brain = load_brain_config(new_cfg)
+        validate_cross_constraints(new_cfg, new_ext, changed_sections=set(section_updates))
     except (ConfigError, ValueError, OSError):
         atomic_write(cfg_file, original_text, [cfg_dir])
         raise

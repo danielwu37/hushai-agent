@@ -93,9 +93,11 @@ def register_brain_commands(subparsers: Any) -> None:
     p_units = bsub.add_parser("units", help="生成 second-brain 专用 systemd 单元文件（不自动安装/启用）")
     p_units.add_argument("--instance", required=True, help="实例名称")
     p_units.add_argument("--out", required=True, help="输出目录（必须已存在）")
-    p_units.add_argument("--daily-time", default=brain_cfg.DEFAULT_DAILY_TIME, help="每日时间 HH:MM（默认 21:00）")
-    p_units.add_argument("--weekly-time", default=brain_cfg.DEFAULT_WEEKLY_TIME, help="周日时间 HH:MM（默认 18:00）")
-    p_units.add_argument("--resurface-time", default=brain_cfg.DEFAULT_RESURFACE_TIME, help="唤醒时间 HH:MM（默认 09:00）")
+    p_units.add_argument("--daily-time", default=None, help="每日时间 HH:MM（默认读取 [brain].daily_time）")
+    p_units.add_argument("--weekly-day", default=None, help="周回顾星期 Mon..Sun（默认读取 [brain].weekly_day）")
+    p_units.add_argument("--weekly-time", default=None, help="周回顾时间 HH:MM（默认读取 [brain].weekly_time）")
+    p_units.add_argument("--resurface-time", default=None, help="唤醒时间 HH:MM（默认读取 [brain].resurface_time）")
+    p_units.add_argument("--monthly-time", default=None, help="每月 1 号时间 HH:MM（默认读取 [brain].monthly_time）")
     p_units.add_argument("--memory-max", default=install.DEFAULT_MEMORY_MAX, help="内存上限（默认 512M）")
 
 
@@ -252,8 +254,10 @@ def dispatch_brain_command(args: argparse.Namespace) -> int | None:
             cfg,
             args.out,
             daily_time=args.daily_time,
+            weekly_day=args.weekly_day,
             weekly_time=args.weekly_time,
             resurface_time=args.resurface_time,
+            monthly_time=args.monthly_time,
             memory_max=args.memory_max,
         )
         for p in written:

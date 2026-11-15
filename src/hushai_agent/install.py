@@ -66,25 +66,59 @@ def _render_from_dir(tpl_dir: Path, out: Path, values: dict[str, str]) -> list[P
     return written
 
 
+def detect_existing_digest_time(cfg: InstanceConfig) -> str:
+    """从 /etc/systemd/system 或实例 units 目录读取既有 digest.timer 时间，未找到时返回 DEFAULT_DIGEST_TIME。"""
+    candidates = [
+        Path(f"/etc/systemd/system/hushai-{cfg.name}-digest.timer"),
+        get_config_root() / cfg.name / "units" / f"hushai-{cfg.name}-digest.timer",
+    ]
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            m = re.search(r"OnCalendar\s*=\s*[^\n]*?\b([01]\d|2[0-3]):([0-5]\d):00\b", text)
+            if m:
+                return f"{m.group(1)}:{m.group(2)}"
+        except OSError:
+            continue
+    return DEFAULT_DIGEST_TIME
+
+
 def render_brain_units(
     cfg: InstanceConfig,
     out_dir: str | Path,
-    daily_time: str = "21:00",
-    weekly_time: str = "18:00",
-    resurface_time: str = "09:00",
+    daily_time: str | None = None,
+    weekly_day: str | None = None,
+    weekly_time: str | None = None,
+    resurface_time: str | None = None,
+    monthly_time: str | None = None,
     memory_max: str = DEFAULT_MEMORY_MAX,
 ) -> list[Path]:
-    """渲染 second-brain 专用服务单元模板（只生成文件，不安装、不启用）。"""
+    """渲染 second-brain 专用服务单元模板（默认从 [brain] 配置读取时间；只生成文件，不安装、不启用）。"""
+    from hushai_agent.brain_cfg import WEEKDAY_MAP, load_brain_config
+
+    bcfg = load_brain_config(cfg)
+    d_time = daily_time if daily_time is not None else bcfg.daily_time
+    w_day_raw = weekly_day if weekly_day is not None else bcfg.weekly_day
+    w_time = weekly_time if weekly_time is not None else bcfg.weekly_time
+    r_time = resurface_time if resurface_time is not None else bcfg.resurface_time
+    m_time = monthly_time if monthly_time is not None else bcfg.monthly_time
+
     out = Path(out_dir).expanduser()
     if not out.is_dir():
         raise ValueError(f"输出目录不存在: {out_dir}")
     for label, tval in (
-        ("--daily-time", daily_time),
-        ("--weekly-time", weekly_time),
-        ("--resurface-time", resurface_time),
+        ("--daily-time", d_time),
+        ("--weekly-time", w_time),
+        ("--resurface-time", r_time),
+        ("--monthly-time", m_time),
     ):
         if not TIME_RE.match(tval):
             raise ValueError(f"{label} 需为 HH:MM: {tval}")
+    w_day = WEEKDAY_MAP.get(str(w_day_raw).strip().lower())
+    if not w_day:
+        raise ValueError(f"--weekly-day 星期非法（可选 Mon..Sun）: {w_day_raw}")
     if not MEMORY_RE.match(memory_max):
         raise ValueError(f"--memory-max 需形如 256M: {memory_max}")
     values = {
@@ -95,9 +129,11 @@ def render_brain_units(
         "{{USER}}": getpass.getuser(),
         "{{HOME}}": str(Path.home()),
         "{{MEMORY_MAX}}": memory_max,
-        "{{BRAIN_DAILY_TIME}}": daily_time,
-        "{{BRAIN_WEEKLY_TIME}}": weekly_time,
-        "{{BRAIN_RESURFACE_TIME}}": resurface_time,
+        "{{BRAIN_DAILY_TIME}}": d_time,
+        "{{BRAIN_WEEKLY_DAY}}": w_day,
+        "{{BRAIN_WEEKLY_TIME}}": w_time,
+        "{{BRAIN_RESURFACE_TIME}}": r_time,
+        "{{BRAIN_MONTHLY_TIME}}": m_time,
         "{{CONFIG_ROOT}}": str(get_config_root()),
         "{{STATE_ROOT}}": str(get_state_root()),
     }
@@ -107,7 +143,7 @@ def render_brain_units(
 def render_units(
     cfg: InstanceConfig,
     out_dir: str | Path,
-    digest_time: str = DEFAULT_DIGEST_TIME,
+    digest_time: str | None = None,
     memory_max: str = DEFAULT_MEMORY_MAX,
     port: int = DEFAULT_PORT,
     with_brain: bool = False,
@@ -116,8 +152,9 @@ def render_units(
     out = Path(out_dir).expanduser()
     if not out.is_dir():
         raise ValueError(f"输出目录不存在: {out_dir}")
-    if not TIME_RE.match(digest_time):
-        raise ValueError(f"--digest-time 需为 HH:MM: {digest_time}")
+    d_time = digest_time if digest_time is not None else detect_existing_digest_time(cfg)
+    if not TIME_RE.match(d_time):
+        raise ValueError(f"--digest-time 需为 HH:MM: {d_time}")
     if not MEMORY_RE.match(memory_max):
         raise ValueError(f"--memory-max 需形如 256M: {memory_max}")
     values = {
@@ -128,8 +165,8 @@ def render_units(
         "{{USER}}": getpass.getuser(),
         "{{HOME}}": str(Path.home()),
         "{{MEMORY_MAX}}": memory_max,
-        "{{DIGEST_TIME}}": digest_time,
-        "{{WEEKLY_TIME}}": _weekly_time(digest_time),
+        "{{DIGEST_TIME}}": d_time,
+        "{{WEEKLY_TIME}}": _weekly_time(d_time),
         "{{PORT}}": str(int(port)),
         "{{CONFIG_ROOT}}": str(get_config_root()),
         "{{STATE_ROOT}}": str(get_state_root()),

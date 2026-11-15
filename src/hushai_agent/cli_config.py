@@ -34,9 +34,9 @@ from hushai_agent.config import (
 )
 from hushai_agent.config_edit import apply_config_updates, list_instances
 from hushai_agent.config_ext import load_ext
-from hushai_agent.paths import get_instance_config_file
+from hushai_agent.paths import get_instance_config_dir, get_instance_config_file
 from hushai_agent.todo import get_today_status, run_todo_action
-from hushai_agent.vault import add_inbox_entry
+from hushai_agent.vault import add_inbox_entry, init_instance
 
 
 @dataclass
@@ -92,14 +92,36 @@ def _safe_apply(
     instance: str,
     updates: dict[str, dict[str, str | None]],
     ok_msg: str = "设置已保存并校验通过。",
+    effect_hint: str = "立即生效（下次命令或网页请求自动读取新配置）",
+    prompt_units: bool = False,
 ) -> bool:
     try:
         apply_config_updates(instance, updates)
         io.write(f"✓ {ok_msg}")
+        if effect_hint:
+            io.write(f"  [生效方式] {effect_hint}")
+        if prompt_units:
+            _offer_regen_units(io, instance)
         return True
     except (ConfigError, ValueError, OSError) as exc:
         io.write(f"✗ 修改未保存（已自动回滚原配置）: {exc}")
         return False
+
+
+def _offer_regen_units(io: MenuIO, instance: str) -> None:
+    cfg = load_instance_config(instance)
+    bcfg = load_brain_config(cfg)
+    units_dir = get_instance_config_dir(instance) / "units"
+    ans = io.read_line(f"是否立即重新生成 systemd 单元到 {units_dir}？[y/N]: ").strip().lower()
+    if ans not in ("y", "yes", "1", "是"):
+        return
+    units_dir.mkdir(parents=True, exist_ok=True)
+    dtime = install.detect_existing_digest_time(cfg)
+    with_brain = bcfg.enabled
+    written = install.render_units(cfg, units_dir, digest_time=dtime, with_brain=with_brain)
+    io.write(f"✓ 已重新生成 {len(written)} 个单元文件至: {units_dir}")
+    for line in install.next_steps(cfg, written):
+        io.write(f"  {line}")
 
 
 def _run_guarded(io: MenuIO, action: Callable[[], None]) -> None:
@@ -218,7 +240,14 @@ def _submenu_basic(io: MenuIO, inst: str) -> None:
     def set_timezone() -> None:
         cfg = load_instance_config(inst)
         val = _prompt_non_empty(io, "输入新时区（如 Asia/Shanghai、America/Los_Angeles）", cfg.timezone)
-        _safe_apply(io, inst, {"instance": {"timezone": val}}, f"时区已更新为 {val}")
+        _safe_apply(
+            io,
+            inst,
+            {"instance": {"timezone": val}},
+            f"时区已更新为 {val}",
+            effect_hint="CLI 与待办网页立即生效；已安装的 systemd 定时器需重新生成并复制启用才会按新时区触发。",
+            prompt_units=True,
+        )
 
     def set_lang() -> None:
         cfg = load_instance_config(inst)
@@ -233,7 +262,20 @@ def _submenu_basic(io: MenuIO, inst: str) -> None:
     def set_vault() -> None:
         cfg = load_instance_config(inst)
         val = _prompt_non_empty(io, "输入记忆库绝对路径", str(cfg.vault))
-        _safe_apply(io, inst, {"instance": {"vault": val}}, f"记忆库路径已更新为 {val}")
+        vpath = Path(val).expanduser()
+        if not (vpath / "hub" / "AGENTS.md").is_file():
+            ans = io.read_line(f"路径 `{vpath}` 尚未初始化为记忆库，是否立即初始化？[y/N]: ").strip().lower()
+            if ans in ("y", "yes", "1", "是"):
+                init_instance(inst, vpath, timezone=cfg.timezone, lang=cfg.lang)
+                io.write(f"✓ 已初始化记忆库目录: {vpath}")
+        _safe_apply(
+            io,
+            inst,
+            {"instance": {"vault": val}},
+            f"记忆库路径已更新为 {val}",
+            effect_hint="CLI 与待办网页立即生效；watch.path 与 steward.service 的工作目录需重新生成单元并重启服务。",
+            prompt_units=True,
+        )
 
     def set_local_only() -> None:
         cfg = load_instance_config(inst)
@@ -320,6 +362,7 @@ def _submenu_doors_domains(io: MenuIO, inst: str) -> None:
             inst,
             {"doors": {"steward": val, "known": ",".join(known)}},
             f"管家端已设为 {val}",
+            effect_hint="CLI 与管家切换立即生效；若已生成 doorkit 接入包，请到菜单 5 重新生成以更新钩子里的端编号。",
         )
 
     def set_known_doors() -> None:
@@ -379,9 +422,13 @@ def _submenu_adapters(io: MenuIO, inst: str) -> None:
 
     def upsert_adapter() -> None:
         cfg = load_instance_config(inst)
-        name = _prompt_non_empty(io, "输入适配器名称（如 claude、agy、fake）", "claude")
+        name = _prompt_non_empty(io, "输入适配器名称（小写，如 claude、agy、fake）", "claude").lower()
         cur = cfg.adapters.get(name, {})
-        atype = _prompt_non_empty(io, "适配类型 (claude / agy / fake)", cur.get("type", name if name in ("claude", "agy", "fake") else "claude"))
+        atype = _prompt_non_empty(
+            io,
+            "适配类型 (claude / agy / fake)",
+            cur.get("type", name if name in ("claude", "agy", "fake") else "claude"),
+        ).lower()
         updates: dict[str, str | None] = {f"{name}.type": atype}
         if atype == "fake":
             fixtures = _prompt_non_empty(io, "fixtures 样例目录路径", cur.get("fixtures", ""))
@@ -402,7 +449,7 @@ def _submenu_adapters(io: MenuIO, inst: str) -> None:
         if not cfg.adapters:
             io.write("当前没有可删除的适配器。")
             return
-        name = _prompt_non_empty(io, f"输入要删除的适配器名（可选: {', '.join(cfg.adapters)}）")
+        name = _prompt_non_empty(io, f"输入要删除的适配器名（可选: {', '.join(cfg.adapters)}）").lower()
         if name not in cfg.adapters:
             io.write(f"适配器 `{name}` 不存在。")
             return
@@ -413,18 +460,24 @@ def _submenu_adapters(io: MenuIO, inst: str) -> None:
     def set_digest_chain() -> None:
         cfg = load_instance_config(inst)
         cur = ",".join(f"{a}:{t}" for a, t in cfg.digest)
-        val = _prompt(io, "每日整理回退链（格式 <adapter>:<light|heavy>，多个逗号分隔；留空清空）", cur)
+        val = _prompt(io, "每日整理回退链（格式 <adapter>:<light|heavy>，输入 clear 清空）", cur)
+        if val.lower() in ("clear", "none", "-", "清空"):
+            val = ""
         _safe_apply(io, inst, {"jobs": {"digest": val}}, f"digest 回退链已更新为: {val or '（空）'}")
 
     def set_weekly_chain() -> None:
         cfg = load_instance_config(inst)
         cur = ",".join(f"{a}:{t}" for a, t in cfg.weekly)
-        val = _prompt(io, "每周回顾回退链（格式 <adapter>:<light|heavy>，多个逗号分隔；留空清空）", cur)
+        val = _prompt(io, "每周回顾回退链（格式 <adapter>:<light|heavy>，输入 clear 清空）", cur)
+        if val.lower() in ("clear", "none", "-", "清空"):
+            val = ""
         _safe_apply(io, inst, {"jobs": {"weekly": val}}, f"weekly 回退链已更新为: {val or '（空）'}")
 
     def set_dispatch() -> None:
         cfg = load_instance_config(inst)
-        val = _prompt(io, "默认派活适配器名称（仅填名字，如 agy 或 claude；留空清空）", cfg.dispatch_adapter)
+        val = _prompt(io, "默认派活适配器名称（仅填名字，如 agy 或 claude；输入 clear 清空）", cfg.dispatch_adapter)
+        if val.lower() in ("clear", "none", "-", "清空"):
+            val = ""
         _safe_apply(io, inst, {"jobs": {"dispatch": val}}, f"默认派活端已更新为: {val or '（空）'}")
 
     def set_budget() -> None:
@@ -561,6 +614,7 @@ def _submenu_sync_and_doors(io: MenuIO, inst: str) -> None:
             inst,
             {"sync": {"tool": tool, "remote": remote, "timeout": timeout}},
             "单向同步配置已更新。",
+            effect_hint="同步不会自动后台运行；修改后可通过本菜单第 2 项立即执行，或运行 `hushai sync`。",
         )
 
     def run_sync_now() -> None:
@@ -582,9 +636,10 @@ def _submenu_sync_and_doors(io: MenuIO, inst: str) -> None:
     def gen_units() -> None:
         cfg = load_instance_config(inst)
         out_dir = _prompt_non_empty(io, "systemd 单元输出目录（需已存在）")
-        dtime = _prompt_non_empty(io, "每日汇总时间 HH:MM", install.DEFAULT_DIGEST_TIME)
+        default_dtime = install.detect_existing_digest_time(cfg)
+        dtime = _prompt_non_empty(io, "每日汇总时间 HH:MM", default_dtime)
         port = int(_prompt_non_empty(io, "本机待办网页端口", str(install.DEFAULT_PORT)))
-        with_brain = _prompt_bool(io, "是否同时生成 second-brain 专用定时器模板", False)
+        with_brain = _prompt_bool(io, "是否同时生成 second-brain 专用定时器模板", load_brain_config(cfg).enabled)
         written = install.render_units(cfg, out_dir, dtime, install.DEFAULT_MEMORY_MAX, port, with_brain=with_brain)
         for p in written:
             io.write(f"✓ 已生成: {p}")
@@ -595,14 +650,14 @@ def _submenu_sync_and_doors(io: MenuIO, inst: str) -> None:
         io.write("\n【多端统一接入速查】")
         io.write("1. 办公室电脑 / 家庭笔记本（Claude Code / Antigravity agy）：")
         io.write("   - 使用本菜单第 3 项生成端接入包（doorkit），配好 SessionStart/Stop 钩子；")
-        io.write("   - 远端电脑通过 SSH 强制命令 `hushai gate ssh` 或 `rclone` 单向同步（菜单第 1-2 项）共用同一份记忆库。")
+        io.write("   - 远端电脑通过 SSH 强制命令 `hushai gate ssh` 或手动/定时执行 `rclone` 单向同步（菜单第 1-2 项）共用同一份记忆库。")
         io.write("2. 手机 Claude App：")
         io.write(f"   - 当管家后端为 claude 时，打开 Claude App -> Code，直接连入实例 `{cfg.name}` 的远程会话。")
         io.write("3. 手机 Muse / SSH 客户端：")
         io.write(f"   - 在服务器 ~/.ssh/authorized_keys 配置强制命令：`bin/hushai-gate-ssh --instance {cfg.name} --door phone`。")
         io.write("4. 手机浏览器 / Duet 等支持同步目录或网页的应用：")
         io.write(f"   - 运行 `hushai serve --instance {cfg.name}` 并通过 SSH 端口转发到手机浏览器，一键看简报、消待办、批记忆；")
-        io.write("   - 网盘类应用通过同步目录只读 `hub/reports/morning-brief.md` 与 `hub/index.md`。")
+        io.write("   - 网盘类应用通过 `hushai sync`（需手动或自建 cron 执行）推送 `hub/reports/`、`hub/index.md` 与 `hub/notes/` 供只读查阅。")
 
     _menu_loop(
         io,
@@ -647,14 +702,18 @@ def _submenu_brain(io: MenuIO, inst: str) -> None:
             f"✓ 已更新：daily={new_b.daily_enabled}, weekly={new_b.weekly_enabled}, "
             f"resurface={new_b.resurface_enabled}, monthly={new_b.monthly_enabled}"
         )
+        io.write("  [生效方式] daily/resurface 随每晚 digest 运行，weekly 随每周回顾运行；monthly 或自定义时间需安装专用 brain 定时器。")
+        if new_b.monthly_enabled or enable:
+            _offer_regen_units(io, inst)
 
     def set_brain_params() -> None:
         cfg = load_instance_config(inst)
         b = load_brain_config(cfg)
         d_time = _prompt_non_empty(io, "每日日报时间 (daily_time)", b.daily_time)
-        w_day = _prompt_non_empty(io, "每周回顾星期 (weekly_day)", b.weekly_day)
+        w_day = _prompt_non_empty(io, "每周回顾星期 (weekly_day, 如 Sun/Mon)", b.weekly_day)
         w_time = _prompt_non_empty(io, "每周回顾时间 (weekly_time)", b.weekly_time)
         r_time = _prompt_non_empty(io, "每日唤醒时间 (resurface_time)", b.resurface_time)
+        m_time = _prompt_non_empty(io, "每月维护时间 (monthly_time, 每月 1 号)", b.monthly_time)
         min_l = _prompt_non_empty(io, "新笔记最少关联链接数 (min_links)", str(b.min_links))
         stale_m = _prompt_non_empty(io, "孤立笔记告警月数 (stale_months)", str(b.stale_months))
         idx_max = _prompt_non_empty(io, "index.md 最大行数 (index_max_lines)", str(b.index_max_lines))
@@ -667,12 +726,15 @@ def _submenu_brain(io: MenuIO, inst: str) -> None:
                     "weekly_day": w_day,
                     "weekly_time": w_time,
                     "resurface_time": r_time,
+                    "monthly_time": m_time,
                     "min_links": min_l,
                     "stale_months": stale_m,
                     "index_max_lines": idx_max,
                 }
             },
             "第二大脑时间与规则参数已更新。",
+            effect_hint="链接与行数规则立即生效；定时时间需重新生成并启用 second-brain systemd 定时器才会按新时间触发。",
+            prompt_units=True,
         )
 
     def do_onboard() -> None:

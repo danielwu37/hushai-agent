@@ -8,6 +8,8 @@ from typing import Any
 
 from hushai_agent.brain_model import (
     BRAIN_SUBDIRS,
+    UNVERIFIED,
+    extract_semantic_body,
     list_brain_markdown_files,
     parse_note_sections,
     read_index_first,
@@ -20,32 +22,43 @@ from hushai_agent.guard import GuardError
 
 NEGATION_WORDS = ("不要", "不应", "不宜", "不可", "不能", "不是", "反对", "放弃", "取消", "停止", "无效", "不适合", "暂停", "not ", "never", "avoid", "stop", "drop")
 AFFIRM_WORDS = ("应该", "推荐", "建议", "采用", "选择", "支持", "有效", "适合", "坚持", "决定", "使用", "should", "use", "adopt", "prefer", "recommend")
+META_PREFIXES = ("- 日期：", "- 主题：", "- 状态：", "- 来源：", "- 作者：", "- 链接：")
+QUANT_RE = re.compile(r"(?:\d+(?:\.\d+)?\s*%|\d+\s*(?:万|亿|元|块|天|小时|分钟|次|个|条|篇|倍|人|月|年|gb|mb|kb|usd|rmb))", re.I)
+ASK_QUANTITY_RE = re.compile(r"(?:多少|几|比例|百分比|额度|预算|价格|金额|数量|多久|多大|how\s+much|how\s+many)", re.I)
 
 
-def _extract_best_quote(text: str, query_tokens: set[str]) -> tuple[str, float]:
-    """从笔记正文选出与问题最匹配的原文片段（按句/行返回，不做任何改写）。"""
+def _extract_best_quote(text: str, query_tokens: set[str], ask_quant: bool = False) -> tuple[str, float]:
+    """从笔记正文选出与问题最匹配的原文片段（跳过元数据与关联笔记章节，按句/行返回，不做改写）。"""
     best_line = ""
     best_score = 0.0
+    in_related = False
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("#", ">", "<!--")):
+        if line.startswith("## "):
+            in_related = line[3:].strip() == "关联笔记"
             continue
-        if line in ("## 三行摘要", "## 关键事实", "## 我的看法", "## 关联笔记", "## 5 个核心要点", "## 值得保留的原句"):
+        if in_related or not line or line.startswith(("#", ">", "<!--")):
+            continue
+        if line.startswith(META_PREFIXES) or UNVERIFIED in line:
             continue
         line_clean = line.lstrip("-*0123456789. ").strip()
         if not line_clean:
             continue
         ltoks = tokenize_text(line_clean)
-        overlap = len(query_tokens & ltoks)
+        matched = query_tokens & ltoks
+        overlap = len(matched) + sum(0.5 for t in matched if len(t) >= 2)
         if overlap > 0:
-            score = overlap / max(1, len(query_tokens) ** 0.5)
+            quant_bonus = 1.5 if (ask_quant and QUANT_RE.search(line_clean)) else 0.0
+            score = (overlap + quant_bonus) / max(1.0, len(query_tokens) ** 0.5)
             if score > best_score:
                 best_score = score
                 best_line = line_clean
     if not best_line:
         for raw in text.splitlines():
             line = raw.strip()
-            if line and not line.startswith(("#", ">", "<!--")):
+            if line.startswith("## ") and line[3:].strip() == "关联笔记":
+                break
+            if line and not line.startswith(("#", ">", "<!--", *META_PREFIXES)) and UNVERIFIED not in line:
                 best_line = line.lstrip("-* ").strip()
                 break
     return best_line, best_score
@@ -116,6 +129,7 @@ def answer_from_notes(
     query_tokens = tokenize_text(q_clean)
     if not query_tokens:
         query_tokens = {q_clean.lower()}
+    ask_quant = bool(ASK_QUANTITY_RE.search(q_clean))
 
     candidate_paths: list[Path] = list_brain_markdown_files(cfg, BRAIN_SUBDIRS)
     for extra_rel in ("hub/decisions.md", "hub/lessons.md", "hub/insights.md", "hub/status.md"):
@@ -150,14 +164,18 @@ def answer_from_notes(
         title = parsed["title"] or path.stem
         idx_hint = index_titles.get(rel_hub, "")
 
-        doc_tokens = tokenize_text(f"{title}\n{idx_hint}\n{content}")
+        body_semantic = extract_semantic_body(content)
+        doc_tokens = tokenize_text(f"{title}\n{idx_hint}\n{body_semantic}")
         matched = query_tokens & doc_tokens
         if not matched:
             continue
 
-        quote, q_score = _extract_best_quote(content, query_tokens)
-        title_bonus = len(query_tokens & tokenize_text(title)) * 1.5
-        score = len(matched) + title_bonus + q_score
+        quote, q_score = _extract_best_quote(content, query_tokens, ask_quant=ask_quant)
+        title_matched = query_tokens & tokenize_text(title)
+        title_bonus = len(title_matched) * 1.5
+        multi_bonus = sum(1.0 for t in matched if len(t) >= 2)
+        quant_doc_bonus = 5.0 if (ask_quant and QUANT_RE.search(quote)) else 0.0
+        score = len(matched) + multi_bonus + title_bonus + q_score * 2.0 + quant_doc_bonus
 
         # 过滤微弱偶然单字匹配（当问题本身有多个词元时要求至少命中 >= 1 个多字词元或 >= 2 个词元）
         multi_char_matched = [t for t in matched if len(t) >= 2]

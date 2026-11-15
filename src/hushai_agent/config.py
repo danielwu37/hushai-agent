@@ -179,6 +179,7 @@ def render_default_config(
         "weekly_day = Sun",
         "weekly_time = 18:00",
         "resurface_time = 09:00",
+        "monthly_time = 09:30",
         "min_links = 2",
         "stale_months = 6",
         "index_max_lines = 200",

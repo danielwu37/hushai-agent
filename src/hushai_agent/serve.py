@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from hushai_agent import brief, candidates, clock, items, ledger
 from hushai_agent.brief_html import render_body, render_html
-from hushai_agent.config import InstanceConfig
+from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.fsio import append_line, atomic_write
 from hushai_agent.paths import get_instance_config_dir, get_instance_state_dir
 from hushai_agent.todo import run_todo_action
@@ -122,6 +122,14 @@ class Handler(BaseHTTPRequestHandler):
         got = jar[COOKIE].value if COOKIE in jar else ""
         return hmac.compare_digest(got.encode("utf-8"), self.server.session.encode("utf-8"))
 
+    def _live_cfg(self) -> InstanceConfig:
+        try:
+            fresh = load_instance_config(self.server.cfg.name)
+            self.server.cfg = fresh
+            return fresh
+        except Exception:
+            return self.server.cfg
+
     def _route(self) -> None:
         url = urlsplit(self.path)
         if self.command == "GET" and url.path == "/" and "t" in parse_qs(url.query):
@@ -133,7 +141,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(302, extra={"Location": "/", "Set-Cookie": cookie})
         if not self._authed():
             return self._send(403)
-        cfg = self.server.cfg
+        cfg = self._live_cfg()
+        if DOOR not in cfg.known_doors:
+            return self._send(403)
         if url.path not in ("/", "/api/brief", "/api/act"):
             return self._send(404)
         if self.command == "GET" and url.path == "/":

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,22 @@ DEFAULT_DAILY_TIME = "21:00"
 DEFAULT_WEEKLY_DAY = "Sun"
 DEFAULT_WEEKLY_TIME = "18:00"
 DEFAULT_RESURFACE_TIME = "09:00"
+DEFAULT_MONTHLY_TIME = "09:30"
 DEFAULT_MIN_LINKS = 2
 DEFAULT_STALE_MONTHS = 6
 DEFAULT_INDEX_MAX_LINES = 200
 DEFAULT_RESURFACE_MIN_AGE_DAYS = 3
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+WEEKDAY_MAP = {
+    "mon": "Mon", "monday": "Mon",
+    "tue": "Tue", "tuesday": "Tue",
+    "wed": "Wed", "wednesday": "Wed",
+    "thu": "Thu", "thursday": "Thu",
+    "fri": "Fri", "friday": "Fri",
+    "sat": "Sat", "saturday": "Sat",
+    "sun": "Sun", "sunday": "Sun",
+}
 
 DEFAULT_BRAIN_INI_BLOCK = (
     "[brain]\n"
@@ -37,6 +50,7 @@ DEFAULT_BRAIN_INI_BLOCK = (
     f"weekly_day = {DEFAULT_WEEKLY_DAY}\n"
     f"weekly_time = {DEFAULT_WEEKLY_TIME}\n"
     f"resurface_time = {DEFAULT_RESURFACE_TIME}\n"
+    f"monthly_time = {DEFAULT_MONTHLY_TIME}\n"
     f"min_links = {DEFAULT_MIN_LINKS}\n"
     f"stale_months = {DEFAULT_STALE_MONTHS}\n"
     f"index_max_lines = {DEFAULT_INDEX_MAX_LINES}\n"
@@ -56,6 +70,7 @@ class BrainConfig:
     weekly_day: str = DEFAULT_WEEKLY_DAY
     weekly_time: str = DEFAULT_WEEKLY_TIME
     resurface_time: str = DEFAULT_RESURFACE_TIME
+    monthly_time: str = DEFAULT_MONTHLY_TIME
     min_links: int = DEFAULT_MIN_LINKS
     stale_months: int = DEFAULT_STALE_MONTHS
     index_max_lines: int = DEFAULT_INDEX_MAX_LINES
@@ -79,6 +94,25 @@ def _parse_bool(raw: str, default: bool = False) -> bool:
     if not val:
         return default
     return val in ("true", "1", "yes", "on")
+
+
+def _parse_time(parser: configparser.ConfigParser, key: str, default: str) -> str:
+    raw = parser.get("brain", key, fallback="").strip()
+    if not raw:
+        return default
+    if not TIME_RE.match(raw):
+        raise ConfigError(f"配置 [brain].{key} 时间格式需为 HH:MM: {raw}")
+    return raw
+
+
+def _parse_weekday(parser: configparser.ConfigParser, key: str, default: str) -> str:
+    raw = parser.get("brain", key, fallback="").strip()
+    if not raw:
+        return default
+    norm = WEEKDAY_MAP.get(raw.lower())
+    if not norm:
+        raise ConfigError(f"配置 [brain].{key} 星期非法（可选 Mon/Tue/Wed/Thu/Fri/Sat/Sun）: {raw}")
+    return norm
 
 
 def _parse_pos_int(parser: configparser.ConfigParser, key: str, default: int, allow_zero: bool = False) -> int:
@@ -112,10 +146,11 @@ def load_brain_config(cfg: InstanceConfig) -> BrainConfig:
         weekly_enabled=_parse_bool(parser.get("brain", "weekly_enabled", fallback="false")),
         resurface_enabled=_parse_bool(parser.get("brain", "resurface_enabled", fallback="false")),
         monthly_enabled=_parse_bool(parser.get("brain", "monthly_enabled", fallback="false")),
-        daily_time=parser.get("brain", "daily_time", fallback=DEFAULT_DAILY_TIME).strip() or DEFAULT_DAILY_TIME,
-        weekly_day=parser.get("brain", "weekly_day", fallback=DEFAULT_WEEKLY_DAY).strip() or DEFAULT_WEEKLY_DAY,
-        weekly_time=parser.get("brain", "weekly_time", fallback=DEFAULT_WEEKLY_TIME).strip() or DEFAULT_WEEKLY_TIME,
-        resurface_time=parser.get("brain", "resurface_time", fallback=DEFAULT_RESURFACE_TIME).strip() or DEFAULT_RESURFACE_TIME,
+        daily_time=_parse_time(parser, "daily_time", DEFAULT_DAILY_TIME),
+        weekly_day=_parse_weekday(parser, "weekly_day", DEFAULT_WEEKLY_DAY),
+        weekly_time=_parse_time(parser, "weekly_time", DEFAULT_WEEKLY_TIME),
+        resurface_time=_parse_time(parser, "resurface_time", DEFAULT_RESURFACE_TIME),
+        monthly_time=_parse_time(parser, "monthly_time", DEFAULT_MONTHLY_TIME),
         min_links=_parse_pos_int(parser, "min_links", DEFAULT_MIN_LINKS),
         stale_months=_parse_pos_int(parser, "stale_months", DEFAULT_STALE_MONTHS),
         index_max_lines=_parse_pos_int(parser, "index_max_lines", DEFAULT_INDEX_MAX_LINES),
@@ -135,11 +170,9 @@ def set_brain_routine_enabled(cfg: InstanceConfig, target: str, enabled: bool) -
     if target != "all" and target not in ROUTINE_NAMES:
         raise ValueError(f"不支持的 routine 名称: {target}（可选 daily|weekly|resurface|monthly|all）")
 
-    cfg_file = get_instance_config_file(cfg.name)
-    cfg_dir = get_instance_config_dir(cfg.name)
-    raw_text = cfg_file.read_text(encoding="utf-8")
-    current = load_brain_config(cfg)
+    from hushai_agent.config_edit import apply_config_updates
 
+    current = load_brain_config(cfg)
     targets = ROUTINE_NAMES if target == "all" else (target,)
     state_map = {
         "daily": current.daily_enabled,
@@ -151,16 +184,15 @@ def set_brain_routine_enabled(cfg: InstanceConfig, target: str, enabled: bool) -
         state_map[name] = enabled
 
     overall_enabled = enabled or any(state_map.values())
-    updates = {
+    updates: dict[str, str | None] = {
         "enabled": "true" if overall_enabled else "false",
         "daily_enabled": "true" if state_map["daily"] else "false",
         "weekly_enabled": "true" if state_map["weekly"] else "false",
         "resurface_enabled": "true" if state_map["resurface"] else "false",
         "monthly_enabled": "true" if state_map["monthly"] else "false",
     }
-    new_text = _update_ini_section(raw_text, "brain", updates)
-    atomic_write(cfg_file, new_text, [cfg_dir])
-    return load_brain_config(cfg)
+    _, _, new_brain = apply_config_updates(cfg.name, {"brain": updates})
+    return new_brain
 
 
 def _state_file(cfg: InstanceConfig) -> Path:
