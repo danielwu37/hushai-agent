@@ -151,28 +151,13 @@ def run_daily_brain(
         return _run_daily_brain_inner(cfg, as_of_date, as_of_str, dry_run=dry_run)
 
 
-def _run_daily_brain_inner(
+def write_daily_brain_note(
     cfg: InstanceConfig,
-    as_of_date: FlexDate,
     as_of_str: str,
+    filed: list[dict[str, Any]],
     dry_run: bool = False,
-) -> dict[str, Any]:
-    read_index_first(cfg)
-    proc_res = process_inbox_to_brain(cfg, as_of_date=as_of_date, dry_run=dry_run, _hold_lock=False)
-    filed = proc_res.get("filed", [])
-
-    if not filed:
-        if not dry_run:
-            ledger.record(cfg, "job", job="brain-daily", date=as_of_str, result="ok", note="silent-nothing-new")
-        return {
-            "date": as_of_str,
-            "dry_run": dry_run,
-            "silent": True,
-            "reason": "nothing-new",
-            "filed_count": 0,
-            "lines": [],
-        }
-
+) -> tuple[Path, list[str]]:
+    """根据已归档条目渲染并幂等合并写入 hub/daily/<date>.md，返回 (目标路径, 三行摘要)。"""
     filed_titles = [e.get("title") or e.get("name") or e.get("path", "") for e in filed[:5]]
     line1 = f"1. 已归档 {len(filed)} 条：" + "、".join(filed_titles)
     line2 = f"2. 意外关联：{_find_unseen_connection(cfg, filed)}"
@@ -180,6 +165,10 @@ def _run_daily_brain_inner(
     line3 = f"3. 你说过要做的事：{promises[0] if promises else '（当前无未兑现承诺）'}"
     three_lines = [line1, line2, line3]
 
+    new_detail_lines = [
+        f"- [{e.get('title') or e.get('name') or e.get('path')}](../{e.get('path')}) ({e.get('type')})"
+        for e in filed
+    ]
     daily_md_lines = [
         f"# 每日第二大脑记录 {as_of_str}",
         "",
@@ -191,7 +180,7 @@ def _run_daily_brain_inner(
         "",
         "## 今日归档明细",
         "",
-        *[f"- [{e.get('title') or e.get('name') or e.get('path')}](../{e.get('path')}) ({e.get('type')})" for e in filed],
+        *new_detail_lines,
         "",
     ]
     state_dir = get_instance_state_dir(cfg.name)
@@ -201,10 +190,6 @@ def _run_daily_brain_inner(
         else (cfg.vault / "hub" / "daily" / f"{as_of_str}.md")
     )
     roots = [state_dir] if dry_run else [cfg.vault]
-    new_detail_lines = [
-        f"- [{e.get('title') or e.get('name') or e.get('path')}](../{e.get('path')}) ({e.get('type')})"
-        for e in filed
-    ]
     if target_path.is_file():
         try:
             existing_txt = target_path.read_text(encoding="utf-8")
@@ -239,6 +224,35 @@ def _run_daily_brain_inner(
         except OSError:
             pass
     atomic_write(target_path, "\n".join(daily_md_lines), roots)
+    return target_path, three_lines
+
+
+def _run_daily_brain_inner(
+    cfg: InstanceConfig,
+    as_of_date: FlexDate,
+    as_of_str: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    read_index_first(cfg)
+    proc_res = process_inbox_to_brain(cfg, as_of_date=as_of_date, dry_run=dry_run, _hold_lock=False)
+    filed = proc_res.get("filed", [])
+
+    if not filed:
+        if not dry_run:
+            ledger.record(cfg, "job", job="brain-daily", date=as_of_str, result="ok", note="silent-nothing-new")
+        return {
+            "date": as_of_str,
+            "dry_run": dry_run,
+            "silent": True,
+            "reason": "nothing-new",
+            "filed_count": 0,
+            "filed": [],
+            "processed_inbox_ids": proc_res.get("processed_inbox_ids", []),
+            "processed_exchange_files": proc_res.get("processed_exchange_files", []),
+            "lines": [],
+        }
+
+    target_path, three_lines = write_daily_brain_note(cfg, as_of_str, filed, dry_run=dry_run)
 
     if not dry_run:
         ledger.record(cfg, "job", job="brain-daily", date=as_of_str, result="ok", note=f"filed={len(filed)}")
@@ -248,6 +262,9 @@ def _run_daily_brain_inner(
         "dry_run": dry_run,
         "silent": False,
         "filed_count": len(filed),
+        "filed": filed,
+        "processed_inbox_ids": proc_res.get("processed_inbox_ids", []),
+        "processed_exchange_files": proc_res.get("processed_exchange_files", []),
         "daily_file": str(target_path),
         "lines": three_lines,
         "output_text": "\n".join(three_lines),

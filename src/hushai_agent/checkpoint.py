@@ -111,23 +111,80 @@ def execute_commit_plan(cfg: InstanceConfig, plan: dict[str, Any]) -> dict[str, 
     return closing_res
 
 
+class _CorruptCheckpoint(ValueError):
+    """检查点 JSON 无法解析或字段类型/结构非法。"""
+
+
+def _quarantine_corrupt_ckpt(state_dir: Path, cpath: Path, reason: str) -> Path:
+    """将损坏或结构非法的检查点隔离到 checkpoints/corrupt-*，避免阻塞后续恢复与调度。"""
+    from hushai_agent.guard import ensure_writable
+
+    safe_cpath = ensure_writable(cpath, [state_dir])
+    quarantine_name = f"corrupt-{cpath.stem}-{time.time_ns()}.bad"
+    qpath = ensure_writable(cpath.parent / quarantine_name, [state_dir])
+    _ = reason
+    os.replace(safe_cpath, qpath)
+    return qpath
+
+
+def _validate_plan_schema(plan: Any) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        raise _CorruptCheckpoint("checkpoint payload must be JSON object")
+    if plan.get("kind") not in ("digest", "mechanical"):
+        raise _CorruptCheckpoint("invalid checkpoint kind")
+    if not isinstance(plan.get("run_id"), str) or not plan["run_id"].strip():
+        raise _CorruptCheckpoint("missing run_id")
+    if not isinstance(plan.get("as_of"), str) or not plan["as_of"].strip():
+        raise _CorruptCheckpoint("missing as_of")
+    for dict_key in ("open_items", "atomic_targets", "daily_state", "candidates_add", "closing", "append_targets"):
+        val = plan.get(dict_key)
+        if val is not None and not isinstance(val, dict):
+            raise _CorruptCheckpoint(f"field {dict_key} must be object or null")
+    at_targets = plan.get("atomic_targets") or {}
+    for rel, spec in at_targets.items():
+        if not isinstance(rel, str) or not isinstance(spec, dict):
+            raise _CorruptCheckpoint("atomic_targets entry must map str -> object")
+    for list_key in ("corrections", "status_archive", "advance_ids"):
+        val = plan.get(list_key)
+        if val is not None and not isinstance(val, list):
+            raise _CorruptCheckpoint(f"field {list_key} must be array or null")
+    closing = plan.get("closing")
+    if isinstance(closing, dict) and closing.get("brain_targets") is not None and not isinstance(closing.get("brain_targets"), dict):
+        raise _CorruptCheckpoint("closing.brain_targets must be object or null")
+    return plan
+
+
+def _validate_route_schema(spec: Any) -> dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise _CorruptCheckpoint("route checkpoint must be JSON object")
+    required_nonempty = ("line_id", "reply_rel", "reply_sha256", "steward_door", "target_door", "receipt_domain", "target")
+    for key in required_nonempty:
+        val = spec.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise _CorruptCheckpoint(f"missing route field {key}")
+    for key in ("reply_content", "receipt_brief"):
+        if not isinstance(spec.get(key), str):
+            raise _CorruptCheckpoint(f"invalid route string field {key}")
+    return spec
+
+
 def recover_pending(cfg: InstanceConfig) -> dict[str, int]:
-    """在持有 runner.lock 时扫描并恢复所有未完成的 digest / mechanical 检查点。"""
+    """在持有 runner.lock 时扫描并恢复所有未完成的 digest / mechanical 检查点，损坏件隔离为 corrupt-*。"""
     cdir = checkpoints_dir(cfg)
     if not cdir.is_dir():
         return {"recovered": 0, "skipped_invalid": 0}
     state_dir = get_instance_state_dir(cfg.name)
     files = sorted(
         p for p in cdir.iterdir()
-        if p.is_file() and p.suffix == ".json" and not p.name.startswith("route-")
+        if p.is_file() and p.suffix == ".json" and not p.name.startswith(("route-", "corrupt-"))
     )
     recovered = skipped_invalid = 0
     for cpath in files:
         try:
-            plan = json.loads(cpath.read_text(encoding="utf-8"))
-            if not isinstance(plan, dict) or plan.get("kind") not in ("digest", "mechanical"):
-                continue
-        except (OSError, UnicodeDecodeError, ValueError):
+            raw = json.loads(cpath.read_text(encoding="utf-8"))
+            plan = _validate_plan_schema(raw)
+        except (UnicodeDecodeError, ValueError, _CorruptCheckpoint) as exc:
+            _quarantine_corrupt_ckpt(state_dir, cpath, str(exc))
             skipped_invalid += 1
             continue
 
@@ -172,18 +229,21 @@ def deliver_route_with_checkpoint(cfg: InstanceConfig, spec: dict[str, Any]) -> 
 
 
 def recover_pending_routes(cfg: InstanceConfig) -> int:
-    """在持有 route.lock 时恢复所有未完成的路由交付检查点。"""
+    """在持有 route.lock 时恢复所有未完成的路由交付检查点，损坏件隔离为 corrupt-*。"""
     cdir = checkpoints_dir(cfg)
     if not cdir.is_dir():
         return 0
     state_dir = get_instance_state_dir(cfg.name)
     recovered = 0
-    for cpath in sorted(p for p in cdir.iterdir() if p.is_file() and p.name.startswith("route-") and p.suffix == ".json"):
+    for cpath in sorted(
+        p for p in cdir.iterdir()
+        if p.is_file() and p.name.startswith("route-") and p.suffix == ".json"
+    ):
         try:
-            spec = json.loads(cpath.read_text(encoding="utf-8"))
-            if not isinstance(spec, dict) or "line_id" not in spec:
-                continue
-        except (OSError, UnicodeDecodeError, ValueError):
+            raw = json.loads(cpath.read_text(encoding="utf-8"))
+            spec = _validate_route_schema(raw)
+        except (UnicodeDecodeError, ValueError, _CorruptCheckpoint) as exc:
+            _quarantine_corrupt_ckpt(state_dir, cpath, str(exc))
             continue
         verify_routing_targets(cfg, spec)
         unlink_if_exists(cpath, [state_dir])
@@ -192,8 +252,11 @@ def recover_pending_routes(cfg: InstanceConfig) -> int:
 
 
 def has_pending(cfg: InstanceConfig) -> bool:
-    """检查是否存在未完成的崩溃检查点或待补跑 dirty 标记。"""
+    """检查是否存在未完成的崩溃检查点或待补跑 dirty 标记（忽略已隔离 corrupt-* 文件）。"""
     cdir = checkpoints_dir(cfg)
-    if cdir.is_dir() and any(p.is_file() and p.suffix == ".json" for p in cdir.iterdir()):
+    if cdir.is_dir() and any(
+        p.is_file() and p.suffix == ".json" and not p.name.startswith("corrupt-")
+        for p in cdir.iterdir()
+    ):
         return True
     return lock.has_dirty(cfg, "mechanical") or lock.has_dirty(cfg, "routing")

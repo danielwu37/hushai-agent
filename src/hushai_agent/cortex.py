@@ -256,36 +256,95 @@ def _save_seen_ids(cfg: InstanceConfig, dec_ids: set[str], les_ids: set[str]) ->
     atomic_write(state_file, payload + "\n", [state_dir])
 
 
-def apply_mech(cfg: InstanceConfig, mech: Any, write: bool = True) -> dict[str, int]:
-    """将机械对账分流出的决定与教训幂等追加到对应文件（按收件行编号去重）。"""
+def ensure_entries_on_disk(
+    cfg: InstanceConfig,
+    decisions: list[dict[str, str]],
+    lessons: list[dict[str, str]],
+) -> None:
+    """幂等确保清单中的决定与教训写入 decisions.md / lessons.md 及 cortex-ids.json。"""
+    if not decisions and not lessons:
+        return
+    dec_ids, les_ids = _load_seen_ids(cfg)
+    dec_file = cfg.vault / "hub" / "decisions.md"
+    les_file = cfg.vault / "hub" / "lessons.md"
+
+    existing_dec_lines = (
+        {ln.strip() for ln in dec_file.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        if dec_file.is_file()
+        else set()
+    )
+    existing_les_lines = (
+        {ln.strip() for ln in les_file.read_text(encoding="utf-8").splitlines() if ln.strip()}
+        if les_file.is_file()
+        else set()
+    )
+
+    state_dirty = False
+    for spec in decisions:
+        line = str(spec.get("line") or "").strip()
+        src = str(spec.get("src") or "").strip()
+        if line and line not in existing_dec_lines:
+            append_line_with_header(dec_file, DECISION_HEADER, line, [cfg.vault])
+            existing_dec_lines.add(line)
+        if src and src not in dec_ids:
+            dec_ids.add(src)
+            state_dirty = True
+
+    for spec in lessons:
+        line = str(spec.get("line") or "").strip()
+        src = str(spec.get("src") or "").strip()
+        if line and line not in existing_les_lines:
+            append_line_with_header(les_file, LESSON_HEADER, line, [cfg.vault])
+            existing_les_lines.add(line)
+        if src and src not in les_ids:
+            les_ids.add(src)
+            state_dirty = True
+
+    if state_dirty:
+        _save_seen_ids(cfg, dec_ids, les_ids)
+
+
+def apply_mech(cfg: InstanceConfig, mech: Any, write: bool = True) -> dict[str, Any]:
+    """将机械对账分流出的决定与教训幂等追加到对应文件（按收件行编号去重），并附带落盘清单。"""
     from hushai_agent.mechanical import AppliedEntry
 
     cortex_actions: list[tuple[Any, InboxRecord]] = getattr(mech, "cortex_actions", [])
     if not cortex_actions:
-        return {"decisions_added": 0, "lessons_added": 0}
+        return {
+            "decisions_added": 0,
+            "lessons_added": 0,
+            "planned_decisions": [],
+            "planned_lessons": [],
+        }
 
     dec_ids, les_ids = _load_seen_ids(cfg)
     dec_added = les_added = 0
+    planned_decisions: list[dict[str, str]] = []
+    planned_lessons: list[dict[str, str]] = []
     dec_file = cfg.vault / "hub" / "decisions.md"
     les_file = cfg.vault / "hub" / "lessons.md"
 
     for act, rec in cortex_actions:
         date_str = rec.date.isoformat() if hasattr(rec.date, "isoformat") else str(rec.date)
         if act.kind == "decision":
+            entry_obj = parse_inbox_decision(act.note, date_str, rec.door, rec.line_id)
+            formatted = entry_obj.format()
+            planned_decisions.append({"src": rec.line_id, "line": formatted})
             if rec.line_id not in dec_ids:
-                entry_obj = parse_inbox_decision(act.note, date_str, rec.door, rec.line_id)
                 if write:
-                    append_line_with_header(dec_file, DECISION_HEADER, entry_obj.format(), [cfg.vault])
+                    append_line_with_header(dec_file, DECISION_HEADER, formatted, [cfg.vault])
                 dec_ids.add(rec.line_id)
                 dec_added += 1
             mech.applied.append(
                 AppliedEntry(action="decision", id=rec.line_id, line_id=rec.line_id, record=rec)
             )
         elif act.kind == "lesson":
+            entry_obj = parse_inbox_lesson(act.note, date_str, rec.line_id)
+            formatted = entry_obj.format()
+            planned_lessons.append({"src": rec.line_id, "line": formatted})
             if rec.line_id not in les_ids:
-                entry_obj = parse_inbox_lesson(act.note, date_str, rec.line_id)
                 if write:
-                    append_line_with_header(les_file, LESSON_HEADER, entry_obj.format(), [cfg.vault])
+                    append_line_with_header(les_file, LESSON_HEADER, formatted, [cfg.vault])
                 les_ids.add(rec.line_id)
                 les_added += 1
             mech.applied.append(
@@ -294,4 +353,9 @@ def apply_mech(cfg: InstanceConfig, mech: Any, write: bool = True) -> dict[str, 
 
     if write and (dec_added or les_added):
         _save_seen_ids(cfg, dec_ids, les_ids)
-    return {"decisions_added": dec_added, "lessons_added": les_added}
+    return {
+        "decisions_added": dec_added,
+        "lessons_added": les_added,
+        "planned_decisions": planned_decisions,
+        "planned_lessons": planned_lessons,
+    }

@@ -12,7 +12,12 @@ from hushai_agent.checkpoint_verify import sha256_text
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
 from hushai_agent.daily_state import load_daily_accumulated, merge_daily_facts
-from hushai_agent.digest_apply import apply_model_output, build_candidate_and_correction_lines
+from hushai_agent.digest_apply import (
+    apply_model_output,
+    build_append_targets_manifest,
+    build_candidate_and_correction_lines,
+    build_closing_plan,
+)
 from hushai_agent.fsio import atomic_write
 from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
@@ -65,8 +70,8 @@ def run_digest(
         records = collect.collect(inst_cfg, as_of_date)
         mech = mechanical.apply_actions(all_items, records)
         ext = load_ext(inst_cfg)
-        candidates.apply_mech(inst_cfg, mech, ext.approval_doors, write=not dry_run)
-        cortex.apply_mech(inst_cfg, mech, write=not dry_run)
+        cand_manifest = candidates.apply_mech(inst_cfg, mech, ext.approval_doors, write=not dry_run)
+        cortex_res = cortex.apply_mech(inst_cfg, mech, write=not dry_run)
 
         by_door: dict[str, int] = {}
         for rec in records:
@@ -269,6 +274,7 @@ def run_digest(
                     "expected_pairs": expected_cand_pairs,
                 },
                 "corrections": corr_lines,
+                "append_targets": build_append_targets_manifest(cand_manifest, cortex_res),
                 "status_archive": [
                     {
                         "domain": r.domain,
@@ -280,15 +286,15 @@ def run_digest(
                     for r in archived_status
                 ],
                 "advance_ids": advance_ids,
-                "closing": {
-                    "brief_required": True,
-                    "brain_mode": "daily",
-                    "brain_record_ids": [r.line_id for r in mech.rest],
-                    "brain_done": False,
-                    "resurface": bool(bcfg.enabled and bcfg.resurface_enabled),
-                    "commit_msg": f"digest {as_of_str}",
-                    "ledger_job": "digest",
-                },
+                "closing": build_closing_plan(
+                    inst_cfg,
+                    as_of_date,
+                    mech.rest,
+                    brain_mode="daily",
+                    resurface=bool(bcfg.enabled and bcfg.resurface_enabled),
+                    commit_msg=f"digest {as_of_str}",
+                    ledger_job="digest",
+                ),
             }
             closing_res = checkpoint.execute_commit_plan(inst_cfg, plan)
             for k in ("brain_daily", "brain", "brain_resurface"):

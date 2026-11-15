@@ -197,6 +197,24 @@ def _append_under(text: str, heading: str, line: str) -> str:
     return "\n".join(lines[:end] + [line] + lines[end:]) + "\n"
 
 
+def ensure_approved_target_line(
+    cfg: InstanceConfig,
+    target: str,
+    cand_id: str,
+    text: str,
+    date_str: str,
+) -> None:
+    """幂等确保已批准候选记忆出现在 hub/profile.md 或 hub/AGENTS.local.md 中。"""
+    if target not in TARGETS:
+        return
+    rel, heading = TARGETS[target]
+    path = cfg.vault / rel
+    old = path.read_text(encoding="utf-8") if path.is_file() else ""
+    marker = f"，{cand_id}）"
+    if not any(ln.lstrip().startswith("- ") and marker in ln for ln in old.splitlines()):
+        atomic_write(path, _append_under(old, heading, f"- {text}（{date_str} 批准，{cand_id}）"), [cfg.vault])
+
+
 def decide(cfg: InstanceConfig, cand_id: str, action: str, to: str, date_str: str, write: bool = True) -> str | None:
     """批准或丢弃一条候选；成功返回 None，否则返回原因。"""
     cands = load(cfg)
@@ -209,13 +227,8 @@ def decide(cfg: InstanceConfig, cand_id: str, action: str, to: str, date_str: st
         target = TO_ALIASES.get(to)
         if target is None:
             return "批准去向只能是画像或规则"
-        rel, heading = TARGETS[target]
         if write:
-            path = cfg.vault / rel
-            old = path.read_text(encoding="utf-8") if path.is_file() else ""
-            marker = f"，{cand.id}）"
-            if not any(ln.lstrip().startswith("- ") and marker in ln for ln in old.splitlines()):
-                atomic_write(path, _append_under(old, heading, f"- {cand.text}（{date_str} 批准，{cand.id}）"), [cfg.vault])
+            ensure_approved_target_line(cfg, target, cand.id, cand.text, date_str)
         cand.status, cand.to = "approved", target
     else:
         cand.status = "discarded"
@@ -225,18 +238,31 @@ def decide(cfg: InstanceConfig, cand_id: str, action: str, to: str, date_str: st
     return None
 
 
-def apply_mech(cfg: InstanceConfig, mech: Any, approval_doors: Iterable[str], write: bool = True) -> None:
-    """执行机械对账里分流出来的批准、丢弃动作，结果并入 mech.applied / mech.unmatched。"""
+def apply_mech(cfg: InstanceConfig, mech: Any, approval_doors: Iterable[str], write: bool = True) -> list[dict[str, str]]:
+    """执行机械对账里分流出来的批准、丢弃动作，结果并入 mech.applied / mech.unmatched，并返回计划落盘清单。"""
     from hushai_agent.mechanical import AppliedEntry
 
     allowed = set(approval_doors)
+    manifest: list[dict[str, str]] = []
+    cands_before = {c.id: c for c in load(cfg)}
     for act, rec in mech.cand_actions:
         entry = AppliedEntry(action=act.kind, id=act.target, line_id=rec.line_id, record=rec)
         if rec.door not in allowed or rec.auto:
             entry.reason = NO_RIGHT
         else:
+            cand_snap = cands_before.get(act.target)
+            target = TO_ALIASES.get(act.note, "") if act.kind == "approve" else ""
             entry.reason = decide(cfg, act.target, act.kind, act.note, str(rec.date), write=write) or ""
+            if not entry.reason and cand_snap is not None:
+                manifest.append({
+                    "id": cand_snap.id,
+                    "status": "approved" if act.kind == "approve" else "discarded",
+                    "target": target,
+                    "text": cand_snap.text,
+                    "date": str(rec.date),
+                })
         (mech.unmatched if entry.reason else mech.applied).append(entry)
+    return manifest
 
 
 def command(cfg: InstanceConfig, action: str, cand_id: str, to: str, door: str) -> Path:

@@ -28,7 +28,9 @@ from hushai_agent.daily_state import (  # noqa: F401
 )
 from hushai_agent.digest_apply import (
     apply_brain_step,
+    build_append_targets_manifest,
     build_candidate_and_correction_lines,
+    build_closing_plan,
     commit_hub_if_git,
 )
 from hushai_agent.fsio import read_for_prompt
@@ -97,8 +99,8 @@ def _run_mechanical_locked(inst_cfg: InstanceConfig) -> dict[str, Any]:
 
     vault = inst_cfg.vault
     ext = load_ext(inst_cfg)
-    candidates.apply_mech(inst_cfg, mech, ext.approval_doors)
-    cortex.apply_mech(inst_cfg, mech, write=True)
+    cand_manifest = candidates.apply_mech(inst_cfg, mech, ext.approval_doors)
+    cortex_res = cortex.apply_mech(inst_cfg, mech, write=True)
 
     cand_lines, corr_lines = build_candidate_and_correction_lines(
         as_of_date=as_of_date,
@@ -207,17 +209,18 @@ def _run_mechanical_locked(inst_cfg: InstanceConfig) -> dict[str, Any]:
             "expected_pairs": expected_cand_pairs,
         },
         "corrections": corr_lines,
+        "append_targets": build_append_targets_manifest(cand_manifest, cortex_res),
         "status_archive": [],
         "advance_ids": [r.line_id for r in processed],
-        "closing": {
-            "brief_required": True,
-            "brain_mode": "reconcile",
-            "brain_record_ids": [r.line_id for r in mech.rest],
-            "brain_done": False,
-            "resurface": False,
-            "commit_msg": f"mechanical {as_of_str} {now_dt.strftime('%H:%M')}",
-            "ledger_job": "mechanical",
-        },
+        "closing": build_closing_plan(
+            inst_cfg,
+            as_of_date,
+            mech.rest,
+            brain_mode="reconcile",
+            resurface=False,
+            commit_msg=f"mechanical {as_of_str} {now_dt.strftime('%H:%M')}",
+            ledger_job="mechanical",
+        ),
     }
     closing_res = checkpoint.execute_commit_plan(inst_cfg, plan)
     brain_info = closing_res.get("brain") or apply_brain_step(

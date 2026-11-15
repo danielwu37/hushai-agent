@@ -296,3 +296,43 @@ def commit_hub_if_git(vault_path: Path, message: str) -> bool:
         return res_commit.returncode == 0
     except OSError:
         return False
+
+
+def build_append_targets_manifest(
+    cand_approvals: list[dict[str, str]],
+    cortex_res: dict[str, Any],
+) -> dict[str, Any]:
+    """整理 profile.md / AGENTS.local.md / decisions.md / lessons.md 的计划追加清单。"""
+    return {
+        "candidate_approvals": list(cand_approvals),
+        "decisions": list(cortex_res.get("planned_decisions") or []),
+        "lessons": list(cortex_res.get("planned_lessons") or []),
+    }
+
+
+def build_closing_plan(
+    cfg: InstanceConfig,
+    as_of_date: FlexDate,
+    rest_records: list[InboxRecord],
+    *,
+    brain_mode: str,
+    resurface: bool,
+    commit_msg: str,
+    ledger_job: str,
+) -> dict[str, Any]:
+    """预计算收尾步待处理的第二大脑记录与交换区文件，构造显式收尾计划。"""
+    rec_scope = None if brain_mode == "daily" else rest_records
+    _, pending_ids, pending_ex = brain_process.collect_unprocessed_for_brain(
+        cfg, as_of_date, records=rec_scope
+    )
+    return {
+        "brief_required": True,
+        "brain_mode": brain_mode,
+        "brain_record_ids": pending_ids,
+        "brain_exchange_files": pending_ex,
+        "brain_targets": {},
+        "brain_done": False,
+        "resurface": resurface,
+        "commit_msg": commit_msg,
+        "ledger_job": ledger_job,
+    }

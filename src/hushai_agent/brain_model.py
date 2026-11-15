@@ -232,6 +232,7 @@ class SourceDoc:
     points: list[str] = field(default_factory=list)
     quotes: list[str] = field(default_factory=list)
     rel_path: str = ""
+    source: str = UNVERIFIED
 
     def render(self) -> str:
         pts = [sanitize_single_line(p) for p in self.points if sanitize_single_line(p)][:5]
@@ -246,6 +247,11 @@ class SourceDoc:
             f"- 作者：{sanitize_single_line(self.author, UNVERIFIED)}",
             f"- 日期：{sanitize_single_line(self.date, UNVERIFIED)}",
             f"- 链接：{sanitize_single_line(self.link, UNVERIFIED)}",
+        ]
+        src_clean = sanitize_single_line(self.source, UNVERIFIED)
+        if src_clean and src_clean != UNVERIFIED:
+            lines.append(f"- 来源：{src_clean}")
+        lines.extend([
             "",
             "## 5 个核心要点",
             "",
@@ -255,8 +261,16 @@ class SourceDoc:
             "",
             *[f"> {q}" for q in qts],
             "",
-        ]
+        ])
         return "\n".join(lines)
+
+
+def _format_sources_line(sources: list[str]) -> str | None:
+    cleaned = [sanitize_single_line(s) for s in sources if sanitize_single_line(s) and sanitize_single_line(s) != UNVERIFIED]
+    if not cleaned:
+        return None
+    deduped = list(dict.fromkeys(cleaned))
+    return f"- 来源：{', '.join(deduped)}"
 
 
 @dataclass
@@ -270,11 +284,17 @@ class PersonDoc:
     promises: list[str] = field(default_factory=list)
     cares_about: list[str] = field(default_factory=list)
     rel_path: str = ""
+    sources: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         lines = [
             f"# {sanitize_single_line(self.name, '未命名联系人')}",
             "",
+        ]
+        src_line = _format_sources_line(self.sources)
+        if src_line:
+            lines.extend([src_line, ""])
+        lines.extend([
             "## 是谁",
             "",
             sanitize_block(self.who) or UNVERIFIED,
@@ -295,7 +315,7 @@ class PersonDoc:
             "",
             *([f"- {sanitize_single_line(x)}" for x in self.cares_about] or [f"- {UNVERIFIED}"]),
             "",
-        ]
+        ])
         return "\n".join(lines)
 
 
@@ -311,6 +331,7 @@ class ProjectDoc:
     next_step: str = UNVERIFIED
     links: list[tuple[str, str]] = field(default_factory=list)
     rel_path: str = ""
+    sources: list[str] = field(default_factory=list)
 
     def render(self, hub_dir: Path) -> str:
         proj_path = hub_dir / self.rel_path
@@ -318,6 +339,11 @@ class ProjectDoc:
             f"# {sanitize_single_line(self.name, '未命名项目')}",
             "",
             f"- 状态：{sanitize_single_line(self.status, UNVERIFIED)}",
+        ]
+        src_line = _format_sources_line(self.sources)
+        if src_line:
+            lines.append(src_line)
+        lines.extend([
             "",
             "## 目标",
             "",
@@ -337,7 +363,7 @@ class ProjectDoc:
             "",
             "## 相关笔记链接",
             "",
-        ]
+        ])
         if self.links:
             for target_rel, reason in self.links:
                 href = relative_link(proj_path, hub_dir / target_rel)
@@ -485,6 +511,25 @@ def parse_note_sections(text: str) -> dict[str, Any]:
         "sections": sections,
         "links": extract_md_links(text),
     }
+
+
+def extract_source_refs_from_md(text: str) -> list[str]:
+    """从笔记/来源/人物/项目 Markdown 中提取来源引用列表（解析 `- 来源：` 与 `- 链接：`）。"""
+    refs: list[str] = []
+    for raw in text.splitlines():
+        for prefix in ("- 来源：", "- 链接："):
+            if raw.startswith(prefix):
+                val = raw[len(prefix) :].strip()
+                if not val or val == UNVERIFIED:
+                    continue
+                if "," in val and not val.startswith(("http://", "https://")):
+                    for part in val.split(","):
+                        p = part.strip()
+                        if p and p != UNVERIFIED and p not in refs:
+                            refs.append(p)
+                elif val not in refs:
+                    refs.append(val)
+    return refs
 
 
 def upsert_index_entry(

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,8 +24,11 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
 
 from hushai_agent import (  # noqa: E402
     brain_cfg,
+    brain_model,
     brain_process,
     brain_routines,
+    brief,
+    brief_html,
     candidates,
     checkpoint,
     checkpoint_verify,
@@ -34,6 +39,7 @@ from hushai_agent import (  # noqa: E402
     lock,
     reconcile,
     routing,
+    validate,
 )
 from hushai_agent.brain_cfg import load_brain_state, save_brain_state  # noqa: E402
 from hushai_agent.config import load_instance_config  # noqa: E402
@@ -629,6 +635,333 @@ class TestP0O1Resilience(unittest.TestCase):
         done_map = {it.id: it.status for it in items.load(self.cfg())}
         self.assertEqual(done_map["260301-2"], "done")
         self.assertFalse(lock.has_dirty(self.cfg(), "mechanical"))
+
+    def test_08_b3_tampered_brain_done_html_corruption_and_append_manifest(self) -> None:
+        """8. brain_done=True 篡改 + people/projects/daily/index/html/profile/decisions/lessons 缺失全修复。"""
+        cfg = self.cfg()
+        brain_cfg.set_brain_routine_enabled(cfg, "daily", True)
+        (self.fixtures / "digest-2026-03-02.json").write_text(
+            json.dumps({"items": [], "status_rows": [], "today_focus": [], "candidates": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        cand_id = candidates.add(
+            cfg,
+            ["- 2026-03-02｜偏好｜采用本地检查点引擎｜src=L-20260302-laptop-0"],
+            n_user=1,
+            as_of="2026-03-02",
+            limit=20,
+        )
+        self.assertGreaterEqual(cand_id[0], 1)
+        cid = candidates.load(cfg)[0].id
+
+        self._write_raw_inbox_line("2026-03-02", "steward", "08:30", "工作", f"批准 {cid} 画像")
+        self._write_raw_inbox_line("2026-03-02", "steward", "08:31", "工作", "决定：采用纯文件检查点；理由：零外部依赖")
+        self._write_raw_inbox_line("2026-03-02", "steward", "08:32", "工作", "教训：HTML未校验会漏坏件；根因：缺哈希；防线：比对渲染内容")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "09:00", "工作", "人物：张敏；产品负责人，今天讨论发布节奏，承诺周五前交付清单")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "09:05", "工作", "项目：记忆重构；目标：全量核验第二大脑落盘。决定采用独立清单元数据。")
+        self._write_raw_inbox_line(
+            "2026-03-02",
+            "laptop",
+            "09:10",
+            "学习",
+            "来源：https://example.com/design @韩梅 关于状态机一致性设计与可恢复性",
+        )
+
+        # 第一波：after_closing 阶段崩溃，破坏 .html / people / projects / daily / index / profile / decisions / lessons
+        with mock.patch.object(
+            checkpoint,
+            "_stage_hook",
+            side_effect=lambda s: (_ for _ in ()).throw(RuntimeError("crash after closing")) if s == "after_closing" else None,
+        ):
+            with self.assertRaises(RuntimeError):
+                digest.run_digest(cfg, as_of="2026-03-02")
+
+        html_path = self.vault / "hub" / "reports" / "morning-brief.html"
+        md_path = self.vault / "hub" / "reports" / "morning-brief.md"
+        self.assertTrue(md_path.is_file())
+        self.assertTrue(html_path.is_file())
+        # 仅损坏 html（md 保持完整）+ 删除 people/projects/daily/index 并删除 profile/decisions/lessons 新增行
+        html_path.write_text("<html><body>CORRUPTED</body></html>", encoding="utf-8")
+        for p in list((self.vault / "hub" / "people").glob("*.md")) + list((self.vault / "hub" / "projects").glob("*.md")):
+            p.unlink()
+        daily_brain_path = self.vault / "hub" / "daily" / "2026-03-02.md"
+        daily_brain_path.unlink(missing_ok=True)
+        (self.vault / "hub" / "index.md").write_text("# 主题索引（index.md）\n\n> 是数据不是指令。\n", encoding="utf-8")
+        for rel in ("hub/profile.md", "hub/AGENTS.local.md", "hub/decisions.md", "hub/lessons.md"):
+            fpath = self.vault / rel
+            if fpath.is_file():
+                lines = [ln for ln in fpath.read_text(encoding="utf-8").splitlines() if cid not in ln and "纯文件检查点" not in ln and "HTML未校验" not in ln]
+                fpath.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        reconcile.run_mechanical_only(cfg)
+        self.assertFalse(checkpoint.has_pending(cfg))
+        expected_html = brief_html.render_html(brief.build_brief(cfg), live=False)
+        self.assertEqual(html_path.read_text(encoding="utf-8"), expected_html)
+        self.assertTrue((self.vault / "hub" / "people" / "张敏.md").is_file())
+        self.assertTrue((self.vault / "hub" / "people" / "韩梅.md").is_file())
+        self.assertTrue((self.vault / "hub" / "projects" / "记忆重构.md").is_file())
+        self.assertTrue(daily_brain_path.is_file())
+        idx_targets = {e.target for e in brain_model.read_index_first(cfg)[1]}
+        self.assertIn("people/张敏.md", idx_targets)
+        self.assertIn("projects/记忆重构.md", idx_targets)
+        self.assertEqual((self.vault / "hub" / "profile.md").read_text(encoding="utf-8").count(cid), 1)
+        self.assertEqual((self.vault / "hub" / "decisions.md").read_text(encoding="utf-8").count("纯文件检查点"), 1)
+        self.assertEqual((self.vault / "hub" / "lessons.md").read_text(encoding="utf-8").count("HTML未校验"), 1)
+
+        # 第二波：无 brain_targets 清单 + brain_done=True 篡改 + brain-state 已含 line_id，但磁盘删除 people 与 daily
+        self._write_raw_inbox_line("2026-03-02", "laptop", "10:00", "工作", "人物：周强；后端主程，今天对接性能基准，承诺周三提供火焰图")
+        rec_id = next(r.line_id for r in iter_inbox_lines(self.vault / "hub" / "inbox") if "周强" in r.did)
+        with mock.patch.object(
+            checkpoint,
+            "_stage_hook",
+            side_effect=lambda s: (_ for _ in ()).throw(RuntimeError("crash before brain targets")) if s == "after_vault_writes" else None,
+        ):
+            with self.assertRaises(RuntimeError):
+                digest.run_digest(cfg, as_of="2026-03-02")
+
+        ckpt_file = next((self.state_dir / "checkpoints").glob("*.json"))
+        raw = json.loads(ckpt_file.read_text(encoding="utf-8"))
+        raw["stage"] = "closing_done"
+        raw["closing"]["brain_done"] = True
+        raw["closing"]["brain_targets"] = {}
+        ckpt_file.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 故意把 line_id 写进 brain-state.json 游标，同时删掉周强文件与 daily
+        b_state = load_brain_state(cfg)
+        b_state["processed_inbox_ids"] = list(dict.fromkeys([*b_state.get("processed_inbox_ids", []), rec_id]))
+        save_brain_state(cfg, b_state)
+        (self.vault / "hub" / "people" / "周强.md").unlink(missing_ok=True)
+        daily_brain_path.unlink(missing_ok=True)
+
+        reconcile.run_mechanical_only(cfg)
+        self.assertTrue((self.vault / "hub" / "people" / "周强.md").is_file())
+        self.assertIn(rec_id, (self.vault / "hub" / "people" / "周强.md").read_text(encoding="utf-8"))
+        self.assertTrue(daily_brain_path.is_file())
+        self.assertIn("people/周强.md", {e.target for e in brain_model.read_index_first(cfg)[1]})
+
+    def test_09_real_subprocess_sigkill_and_people_projects_idempotency(self) -> None:
+        """9. 真实子进程 os.kill(SIGKILL) 中断恢复：people/projects/sources/notes 零重复且通过 validate_vault。"""
+        cfg = self.cfg()
+        brain_cfg.set_brain_routine_enabled(cfg, "all", True)
+        (self.fixtures / "digest-2026-03-02.json").write_text(
+            json.dumps({"items": [], "status_rows": [], "today_focus": [], "candidates": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._write_raw_inbox_line("2026-03-02", "laptop", "09:00", "工作", "人物：赵云；安全工程师，讨论沙箱边界，承诺明天给审计脚本")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "09:01", "工作", "项目：零trust沙箱；目标：构建进程级隔离。需要验证信号安全。")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "09:02", "学习", "来源：https://example.com/sigkill @陈平 关于强杀恢复设计")
+
+        ready_flag = self.base / "sigkill_ready.flag"
+        child_code = (
+            "from pathlib import Path\n"
+            "import time\n"
+            "from unittest import mock\n"
+            "from hushai_agent import brain_process\n"
+            "from hushai_agent.config import load_instance_config\n"
+            f"flag = Path({str(ready_flag)!r})\n"
+            "def hang_on_state_save(c, state):\n"
+            "    flag.write_text('ready', encoding='utf-8')\n"
+            "    time.sleep(30)\n"
+            "with mock.patch.object(brain_process, 'save_brain_state', side_effect=hang_on_state_save):\n"
+            "    brain_process.process_inbox_to_brain(load_instance_config('demo'), as_of_date='2026-03-02')\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            env={**os.environ, "PYTHONPATH": f"{SRC_DIR}:{TESTS_DIR}"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 8.0
+            while not ready_flag.is_file() and time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            if not ready_flag.is_file():
+                err_txt = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+                self.fail(f"ready_flag not written in time; rc={proc.poll()} stderr={err_txt}")
+            os.kill(proc.pid, signal.SIGKILL)
+            rc = proc.wait(timeout=5.0)
+            self.assertEqual(rc, -signal.SIGKILL)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+
+        # 子进程已在写出 people/projects/sources/notes 之后、保存 brain-state.json 之前被 SIGKILL
+        people_txt_before = (self.vault / "hub" / "people" / "赵云.md").read_text(encoding="utf-8")
+        proj_txt_before = (self.vault / "hub" / "projects" / "零trust沙箱.md").read_text(encoding="utf-8")
+        sources_before = sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md"))
+        notes_before = sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md"))
+        self.assertEqual(people_txt_before.count("讨论沙箱边界"), 1)
+        self.assertIn("需要验证信号安全", proj_txt_before)
+        self.assertEqual(load_brain_state(cfg).get("processed_inbox_ids", []), [])
+
+        # 二次重启恢复：zero duplicates 且游标推进
+        res2 = brain_process.process_inbox_to_brain(self.cfg(), as_of_date="2026-03-02")
+        self.assertEqual(res2.get("filed"), [])
+        self.assertEqual(sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md")), sources_before)
+        self.assertEqual(sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md")), notes_before)
+        self.assertEqual((self.vault / "hub" / "people" / "赵云.md").read_text(encoding="utf-8"), people_txt_before)
+        self.assertEqual((self.vault / "hub" / "projects" / "零trust沙箱.md").read_text(encoding="utf-8"), proj_txt_before)
+        self.assertEqual(len(load_brain_state(cfg).get("processed_inbox_ids", [])), 3)
+
+        # 第二次真实 SIGKILL：在 digest before_cursor 强杀后由父进程恢复
+        self._write_raw_inbox_line("2026-03-02", "laptop", "11:00", "更正", "门禁卡编号是 A77")
+        digest_flag = self.base / "digest_sigkill.flag"
+        digest_code = (
+            "from pathlib import Path\n"
+            "import time\n"
+            "from unittest import mock\n"
+            "from hushai_agent import checkpoint, digest\n"
+            "from hushai_agent.config import load_instance_config\n"
+            f"flag = Path({str(digest_flag)!r})\n"
+            "def hang_hook(stage):\n"
+            "    if stage == 'before_cursor':\n"
+            "        flag.write_text('ready', encoding='utf-8')\n"
+            "        time.sleep(30)\n"
+            "with mock.patch.object(checkpoint, '_stage_hook', side_effect=hang_hook):\n"
+            "    digest.run_digest(load_instance_config('demo'), as_of='2026-03-02')\n"
+        )
+        proc2 = subprocess.Popen(
+            [sys.executable, "-c", digest_code],
+            env={**os.environ, "PYTHONPATH": f"{SRC_DIR}:{TESTS_DIR}"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 8.0
+            while not digest_flag.is_file() and time.monotonic() < deadline:
+                if proc2.poll() is not None:
+                    break
+                time.sleep(0.05)
+            if not digest_flag.is_file():
+                err_txt = proc2.stderr.read().decode(errors="replace") if proc2.stderr else ""
+                self.fail(f"digest_flag not written in time; rc={proc2.poll()} stderr={err_txt}")
+            os.kill(proc2.pid, signal.SIGKILL)
+            self.assertEqual(proc2.wait(timeout=5.0), -signal.SIGKILL)
+        finally:
+            if proc2.poll() is None:
+                proc2.kill()
+                proc2.wait(timeout=5.0)
+            for pipe in (proc2.stdout, proc2.stderr):
+                if pipe is not None:
+                    pipe.close()
+
+        self.assertTrue(checkpoint.has_pending(self.cfg()))
+        reconcile.run_mechanical_only(self.cfg())
+        self.assertFalse(checkpoint.has_pending(self.cfg()))
+        self.assertEqual((self.vault / "hub" / "reports" / "corrections.md").read_text(encoding="utf-8").count("门禁卡编号是 A77"), 1)
+        self.assertTrue(validate.validate_vault(self.vault)["ok"])
+
+    def test_10_corrupt_checkpoint_quarantine_and_multiprocess_contention(self) -> None:
+        """10. 损坏 checkpoint 隔离到 corrupt-* 不阻塞后续运行；多进程并发竞争零丢失零重复。"""
+        cfg = self.cfg()
+        cdir = checkpoint.checkpoints_dir(cfg)
+        cdir.mkdir(parents=True, exist_ok=True)
+        (cdir / "001-bad-json.json").write_text("{corrupt-json", encoding="utf-8")
+        (cdir / "002-bad-type.json").write_text("[1, 2, 3]", encoding="utf-8")
+        (cdir / "003-bad-schema.json").write_text(
+            json.dumps({"kind": "digest", "run_id": "x", "as_of": "2026-03-02", "atomic_targets": "not-a-dict"}),
+            encoding="utf-8",
+        )
+        (cdir / "route-L-bad.json").write_text(json.dumps({"line_id": "L-bad"}), encoding="utf-8")
+
+        rec_res = checkpoint.recover_pending(cfg)
+        route_res = checkpoint.recover_pending_routes(cfg)
+        self.assertEqual(rec_res["skipped_invalid"], 3)
+        self.assertEqual(route_res, 0)
+        self.assertFalse(checkpoint.has_pending(cfg))
+        quarantined = sorted(p.name for p in cdir.glob("corrupt-*.bad"))
+        self.assertEqual(len(quarantined), 4)
+
+        # 多进程高竞争压测：reconcile / digest / routing / heal 同刻在 4 个独立 OS 进程启动竞争锁
+        (self.vault / "hub" / "open-items.md").write_text(
+            "# 开放项\n"
+            "- [ ] 260301-1｜并发办结任务｜owner=user｜sched=2026-03-02｜due=-｜domain=工作｜verified=2026-03-01｜src=-\n",
+            encoding="utf-8",
+        )
+        (self.fixtures / "route-steward-2026-03-02.json").write_text(
+            json.dumps({"__raw__": "并发路由已收到"}, ensure_ascii=False), encoding="utf-8"
+        )
+        self._write_raw_inbox_line("2026-03-02", "laptop", "12:00", "工作", "完成 260301-1：已交付")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "12:01", "更正", "并发压测记录唯一")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "12:02", "工作", "发出并发路由", todo="@steward 请确认并发路由回复")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "12:03", "工作", "复盘多进程并发文件锁与脏标记协同设计")
+
+        (self.fixtures / "digest-2026-03-02.json").write_text(
+            json.dumps({"items": [], "status_rows": [], "today_focus": [], "candidates": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        go_gate = self.base / "mp_go.gate"
+        model_calls_log = self.base / "model_calls.log"
+        wait_py = (
+            "import time\nfrom pathlib import Path\n"
+            f"gate = Path({str(go_gate)!r})\n"
+            "deadline = time.monotonic() + 8.0\n"
+            "while not gate.is_file() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+        )
+        scripts = [
+            wait_py + "from hushai_agent import reconcile\nreconcile.run_mechanical_only('demo')\n",
+            wait_py + (
+                "from pathlib import Path\nfrom unittest import mock\n"
+                "from hushai_agent import digest, lock, runner\n"
+                f"log = Path({str(model_calls_log)!r})\n"
+                "orig_run = runner.run_model\n"
+                "def counted_run(*args, **kwargs):\n"
+                "    with open(log, 'a', encoding='utf-8') as f: f.write('1\\n')\n"
+                "    return orig_run(*args, **kwargs)\n"
+                "try:\n"
+                "    with mock.patch('hushai_agent.digest.runner.run_model', side_effect=counted_run):\n"
+                "        digest.run_digest('demo', as_of='2026-03-02')\n"
+                "except lock.LockBusy:\n"
+                "    pass\n"
+            ),
+            wait_py + (
+                "from hushai_agent import routing\nfrom hushai_agent.config import load_instance_config\n"
+                "from hushai_agent.config_ext import load_ext\n"
+                "c = load_instance_config('demo')\nrouting.run(c, load_ext(c))\n"
+            ),
+            wait_py + "from hushai_agent import heal, lock\ntry:\n    heal.run_heal('demo')\nexcept lock.LockBusy:\n    pass\n",
+        ]
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", code],
+                env={**os.environ, "PYTHONPATH": f"{SRC_DIR}:{TESTS_DIR}", "HUSHAI_LOCK_WAIT": "0.1"},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for code in scripts
+        ]
+        try:
+            time.sleep(0.15)
+            go_gate.write_text("go", encoding="utf-8")
+            for p in procs:
+                out, err = p.communicate(timeout=15.0)
+                self.assertEqual(p.returncode, 0, msg=f"worker failed rc={p.returncode}\nstdout={out.decode()}\nstderr={err.decode()}")
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(timeout=5.0)
+                for pipe in (p.stdout, p.stderr):
+                    if pipe is not None:
+                        pipe.close()
+
+        # 排空任何锁冲突期间留下的 dirty 标记后再补一次干净汇总
+        reconcile.run_mechanical_only(self.cfg())
+        routing.run(self.cfg(), load_ext(self.cfg()))
+        self.assertFalse(checkpoint.has_pending(self.cfg()))
+        self.assertEqual((self.vault / "hub" / "reports" / "corrections.md").read_text(encoding="utf-8").count("并发压测记录唯一"), 1)
+        done_map = {it.id: it.status for it in items.load(self.cfg())}
+        self.assertEqual(done_map["260301-1"], "done")
+        routed_lines = [ln for ln in (self.state_dir / "routed.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        self.assertEqual(len(routed_lines), 1)
+        calls = len(model_calls_log.read_text(encoding="utf-8").splitlines()) if model_calls_log.is_file() else 0
+        self.assertLessEqual(calls, 1)
 
 
 if __name__ == "__main__":
