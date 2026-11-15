@@ -229,8 +229,8 @@ def detect_claude_quota_exhausted(cfg: InstanceConfig, hooks: dict[str, Any] | N
             idx = raw.rfind("[hushai-steward start backend=claude")
             texts.append(raw[idx:] if idx >= 0 else raw[-8000:])
         run_cmd: Callable[..., tuple[int, str]] = (hooks or {}).get("cmd_runner") or _default_cmd_runner
-        # 只看屏幕最后 40 行、精确会话名；更早的滚屏多半是对话内容，容易误判
-        rc, pane = run_cmd(["tmux", "capture-pane", "-p", "-t", f"=hushai-{cfg.name}", "-S", "-40"], timeout=5)
+        # 只看屏幕最后 40 行、精确会话名（结尾冒号：tmux 3.2 的 capture-pane 不接受无冒号的 =名）；更早的滚屏多半是对话内容，容易误判
+        rc, pane = run_cmd(["tmux", "capture-pane", "-p", "-t", f"=hushai-{cfg.name}:", "-S", "-40"], timeout=5)
         if rc == 0 and pane:
             texts.append(pane)
     for blob in texts:
