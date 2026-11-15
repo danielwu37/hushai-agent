@@ -25,8 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **修复第二大脑自动补链与 Ask 检索质量问题**：新增 `extract_semantic_body` 剔除头部元数据与 `## 关联笔记` 段落并过滤状态模板词/日期/`L-...` 编号/疑问虚词；`brain ask` 仅在正文选引用并提高数量提问数值加权；`_extract_title` 规整删除 URL 后的多余空白。
 
 ### Changed
-- **独立一键卸载脚本与交互式初始化/卸载增强**：
-  - 新增可执行脚本 [`bin/hushai-uninstall`](bin/hushai-uninstall)（无参进入交互向导、亦支持 `--instance`/`--all`/`--yes`/`--keep-vault`/`--remove-bin-link`/`--remove-app`），[`lifecycle.py`](src/hushai_agent/lifecycle.py) 支持清理本机 `hushai-*` systemd 单元（[`cli_m3d.py`](src/hushai_agent/cli_m3d.py) 新增 `hushai uninstall --with-systemd`）并在清理部署目录时硬性保护开发仓库避免误删。
+- **独立一键卸载脚本与交互式初始化/卸载增强（含 `vault` 默认永久保留保护）**：
+  - 新增可执行脚本 [`bin/hushai-uninstall`](bin/hushai-uninstall)（无参进入交互向导、亦支持 `--instance`/`--all`/`--yes`/`--delete-vault`/`--remove-bin-link`/`--remove-app`），[`lifecycle.py`](src/hushai_agent/lifecycle.py) 与 [`cli_m3d.py`](src/hushai_agent/cli_m3d.py) 强制默认 **`keep_vault=True`** 永久保留用户 `vault` 记忆库（不带 `--delete-vault` 仅清程序配置、运行状态与 systemd 单元；交互卸载若选删除 vault 须额外输入 `DELETE-VAULT` 二次确认；清理部署目录时亦硬性保护开发仓库避免误删）。
   - [`cli_config.py`](src/hushai_agent/cli_config.py) 菜单 `8. 手动触发整理与系统维护` 新增第 8 项一键卸载/重置入口，卸载当前实例后安全切换或退出；`hushai install wizard`（[`cli_m3b.py`](src/hushai_agent/cli_m3b.py)）与 `_wizard_create_interactive` 支持省略或回车采用默认实例名 `my` 并交互提示记忆库路径；[`README.md`](README.md)、[`docs/admin-guide.md`](docs/admin-guide.md) 与 [`docs/design.md`](docs/design.md) 部署路径切换为 `/opt/hushai-agent`。
 - **`hushai config` 菜单反馈与单元/Vault 联动**：每次保存明确提示 `[生效方式]`；修改时区、`vault`、`[brain]` 开关与时间后主动询问一键重生成 systemd 单元并给出 `systemctl` 命令；`vault` 未初始化时询问一键初始化；回退/路由链支持输入 `clear` 清空；适配器名统一小写规范化；补充 `monthly_time` 设置项与同步口径说明。
 - **文档与测试补充**：对齐 `README.md` 与 `docs/second-brain.md` 中关于手工同步边界、`monthly` 定时器前提及 `人物：`/`项目：`/`@姓名` 触发说明；`tests/test_config_menu.py` 新增 `test_04`～`test_07` 行为传播与回归测试。

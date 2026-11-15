@@ -190,19 +190,29 @@ class TestM3d(unittest.TestCase):
         self.assertIn("永远保留", (self.vault / "hub" / "AGENTS.local.md").read_text(encoding="utf-8"))
         self.assertIn("名字：测试者", (self.vault / "hub" / "profile.md").read_text(encoding="utf-8"))
 
-        # uninstall：默认 dry-run 不删；--yes --keep-vault 保留 vault；--yes 全删
+        # uninstall：默认 dry-run 不删；加 --yes 默认永久保留 vault；只有显式 --delete-vault 才删 vault
         p4 = run_hushai_cli(SRC_DIR, "uninstall", "--instance", "demo", "--json")
         self.assertEqual(p4.returncode, 0)
         self.assertTrue(json.loads(p4.stdout)["dry_run"])
+        self.assertTrue(json.loads(p4.stdout)["keep_vault"])
         self.assertTrue(self.cfg_file.is_file())
 
-        p5 = run_hushai_cli(SRC_DIR, "uninstall", "--instance", "demo", "--yes", "--keep-vault", "--json")
-        self.assertEqual(p5.returncode, 0)
+        p5 = run_hushai_cli(SRC_DIR, "uninstall", "--instance", "demo", "--yes", "--json")
+        self.assertEqual(p5.returncode, 0, msg=p5.stderr)
+        p5_res = json.loads(p5.stdout)
+        self.assertTrue(p5_res["keep_vault"])
         self.assertFalse(self.cfg_file.exists())
         self.assertTrue((self.vault / "hub" / "profile.md").is_file())
 
+        p_conflict = run_hushai_cli(
+            SRC_DIR, "uninstall", "--instance", "demo", "--keep-vault", "--delete-vault"
+        )
+        self.assertNotEqual(p_conflict.returncode, 0)
+
         init_instance("demo2", self.base / "vault2", no_git=True)
-        lifecycle.run_uninstall("demo2", yes=True, keep_vault=False)
+        p6 = run_hushai_cli(SRC_DIR, "uninstall", "--instance", "demo2", "--yes", "--delete-vault", "--json")
+        self.assertEqual(p6.returncode, 0, msg=p6.stderr)
+        self.assertFalse(json.loads(p6.stdout)["keep_vault"])
         self.assertFalse((self.base / "vault2").exists())
 
     def test_04_propose_probe_compose_in_weekly(self) -> None:
@@ -298,7 +308,7 @@ class TestM3d(unittest.TestCase):
         self.assertFalse(u_link.exists())
         self.assertTrue(u_my.is_file())
 
-        # 3) bin/hushai-uninstall --all --yes 全清，但拒绝误删 /root/hushai-agent，而允许删临时模拟部署目录
+        # 3) bin/hushai-uninstall --all --yes 默认永久保留 vault，并拒绝误删 /root/hushai-agent
         fake_bin_link = self.base / "local_bin" / "hushai"
         fake_bin_link.parent.mkdir()
         fake_bin_link.symlink_to(script_path.parent / "hushai")
@@ -323,14 +333,25 @@ class TestM3d(unittest.TestCase):
         )
         self.assertEqual(proc_guard.returncode, 0, msg=proc_guard.stderr)
         res_guard = json.loads(proc_guard.stdout)
+        self.assertTrue(res_guard["keep_vault"])
         self.assertFalse(res_guard["app_dir_removed"])
         self.assertIn("开发仓库", res_guard["app_dir_skipped_reason"])
         self.assertTrue(Path("/root/hushai-agent/README.md").is_file())
         self.assertFalse(fake_bin_link.exists())
         self.assertFalse(u_my.exists())
-        self.assertFalse(wiz_default_vault.exists())
+        self.assertTrue((wiz_default_vault / "hub" / "profile.md").is_file())
 
-        # 4) 允许删除受识别的隔离部署目录（含 bin/hushai）
+        # 4) 显式 --delete-vault 才会连 vault 一起删除，且允许删除受识别的隔离部署目录
+        wipe_vault = self.base / "wiz-wipe-vault"
+        p_wipe = run_hushai_cli(
+            SRC_DIR,
+            "install", "wizard",
+            "--instance", "wipe",
+            "--vault", str(wipe_vault),
+            "--no-git",
+            "--json",
+        )
+        self.assertEqual(p_wipe.returncode, 0, msg=p_wipe.stderr)
         fake_opt_app = self.base / "opt" / "hushai-agent"
         (fake_opt_app / "bin").mkdir(parents=True)
         (fake_opt_app / "bin" / "hushai").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
@@ -340,6 +361,7 @@ class TestM3d(unittest.TestCase):
                 str(script_path),
                 "--all",
                 "--yes",
+                "--delete-vault",
                 "--remove-app",
                 "--systemd-dir", str(fake_sd),
                 "--bin-link", str(fake_bin_link),
@@ -352,7 +374,10 @@ class TestM3d(unittest.TestCase):
             text=True,
         )
         self.assertEqual(proc_app.returncode, 0, msg=proc_app.stderr)
-        self.assertTrue(json.loads(proc_app.stdout)["app_dir_removed"])
+        app_res = json.loads(proc_app.stdout)
+        self.assertTrue(app_res["app_dir_removed"])
+        self.assertFalse(app_res["keep_vault"])
+        self.assertFalse(wipe_vault.exists())
         self.assertFalse(fake_opt_app.exists())
 
 

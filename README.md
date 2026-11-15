@@ -203,9 +203,9 @@ hushai brain ask "为什么当初决定采用纯标准库方案？" --instance m
 hushai brain process --instance my
 hushai brain enable all --instance my    # 手动启用第二大脑定时 routine
 
-# 卸载与环境重置（也可在 hushai config -> 8 -> 8 交互完成）
-hushai uninstall --instance my --with-systemd            # 先演练预览将删内容，确认后加 --yes
-/opt/hushai-agent/bin/hushai-uninstall                   # 独立一键交互卸载 / 彻底重置环境脚本
+# 卸载与环境重置（默认永久保留 vault 记忆库；也可在 hushai config -> 8 -> 8 交互完成）
+hushai uninstall --instance my --with-systemd            # 先演练预览，加 --yes 只删配置/状态/systemd 并保留 vault；真要连数据销毁需加 --delete-vault
+/opt/hushai-agent/bin/hushai-uninstall                   # 独立一键交互卸载脚本（默认永久保留 vault）
 ```
 
 查看完整参数帮助：`hushai --help` 或 `hushai brain --help`。

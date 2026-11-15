@@ -32,10 +32,12 @@ def register_m3d_commands(subparsers: Any) -> None:
     p_upg.add_argument("--instance", required=True, help="实例名称")
     p_upg.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
-    p_uni = subparsers.add_parser("uninstall", help="卸载本实例（默认仅演练列出将删目录与命令）")
+    p_uni = subparsers.add_parser("uninstall", help="卸载本实例（默认仅演练预览，且默认永久保留 vault 记忆库）")
     p_uni.add_argument("--instance", required=True, help="实例名称")
-    p_uni.add_argument("--yes", action="store_true", help="确认执行删除本实例目录")
-    p_uni.add_argument("--keep-vault", action="store_true", help="保留 vault 数据目录，只删配置与状态目录")
+    p_uni.add_argument("--yes", action="store_true", help="确认执行删除本实例配置与状态目录")
+    vgrp = p_uni.add_mutually_exclusive_group()
+    vgrp.add_argument("--keep-vault", action="store_true", help="（默认行为）保留 vault 记忆库目录，只删配置与状态目录")
+    vgrp.add_argument("--delete-vault", action="store_true", help="【危险】连同 vault 记忆库目录一起永久删除")
     p_uni.add_argument("--with-systemd", action="store_true", help="同时停用并删除对应的 /etc/systemd/system/hushai-<实例>-* 单元")
     p_uni.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
@@ -74,10 +76,11 @@ def dispatch_m3d_command(args: argparse.Namespace) -> int | None:
         return 0
 
     if args.command == "uninstall":
+        keep_vault = not args.delete_vault
         res = lifecycle.run_uninstall(
             args.instance,
             yes=args.yes,
-            keep_vault=args.keep_vault,
+            keep_vault=keep_vault,
             remove_systemd=args.with_systemd,
         )
         if args.json:
@@ -87,8 +90,12 @@ def dispatch_m3d_command(args: argparse.Namespace) -> int | None:
                 print("【演练模式】未删除任何目录。加 --yes 将删除以下本实例目录：")
                 for t in res["targets"]:
                     print(f"  - {t}")
+                if res.get("preserved_vault"):
+                    print(f"【安全保留】记忆库 vault 不会被删除: {res['preserved_vault']}")
             else:
                 print(f"已删除本实例目录: {', '.join(res['removed'])}")
+                if res.get("preserved_vault"):
+                    print(f"已永久保留记忆库 vault: {res['preserved_vault']}")
                 if res.get("systemd_removed"):
                     print(f"已清理 systemd 单元: {', '.join(res['systemd_removed'])}")
             if not args.with_systemd or res.get("systemd_errors"):

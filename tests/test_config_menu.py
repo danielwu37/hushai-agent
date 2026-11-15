@@ -296,9 +296,9 @@ class TestConfigMenu(unittest.TestCase):
             "",  # 默认语言
             "",  # 默认 steward
             "",  # remote 空
-            # 先测试确认名错误会取消，再正式卸载 my（不保留 vault，清理 systemd）
-            "8", "8", "1", "y", "y", "wrong-name",
-            "8", "1", "n", "y", "my",
+            # 先测试确认名错误会取消；再正式卸载 my 且直接回车保持默认（永久保留 vault，清理 systemd）
+            "8", "8", "1", "y", "", "wrong-name",
+            "8", "1", "y", "", "my",
         ]
         with mock.patch.dict(os.environ, {"HOME": str(fake_home)}), \
              mock.patch.object(lifecycle, "DEFAULT_SYSTEMD_DIR", fake_sd), \
@@ -308,13 +308,14 @@ class TestConfigMenu(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("实例 my 初始化完成", out)
         self.assertIn("确认名称不匹配，已取消卸载", out)
+        self.assertIn("已永久保留记忆库 vault", out)
         self.assertIn("当前实例已卸载，已无剩余实例，已退出设置中心", out)
         self.assertFalse(get_instance_config_dir("my").exists())
-        self.assertFalse(vault_my.exists())
+        self.assertTrue((vault_my / "hub" / "profile.md").is_file())
         self.assertFalse(sd_unit.exists())
         self.assertFalse(sd_link.exists())
 
-        # 2) 多实例：先在菜单 8->8->1 卸载 a 并切到 b，再用 8->8->2 RESET 全清 + 删除软链
+        # 2) 多实例：先在 8->8->1 卸载 a 并误输二次确认仍保住 va；再 8->8->2 通过 DELETE-VAULT + RESET 删除临时 vb
         init_instance("a", self.base / "va", no_git=True)
         init_instance("b", self.base / "vb", no_git=True)
         bin_link = fake_home / ".local" / "bin" / "hushai"
@@ -326,8 +327,8 @@ class TestConfigMenu(unittest.TestCase):
 
         script_2 = [
             "1",  # 多实例列表先选 a
-            "8", "8", "1", "n", "y", "a",  # 卸载 a -> 回到多实例只剩 b 自动切换为 b
-            "8", "8", "2", "n", "y", "y", "RESET",  # 一键重置全清（含 b 的 vault、systemd、bin_link，保留 fake_app）
+            "8", "8", "1", "y", "y", "wrong-token", "a",  # 选 y 想删但没输入 DELETE-VAULT -> 必须保住 va
+            "8", "8", "2", "y", "y", "y", "DELETE-VAULT", "RESET",  # 二次输入 DELETE-VAULT + RESET 才删 vb + bin_link
         ]
         with mock.patch.dict(os.environ, {"HOME": str(fake_home)}), \
              mock.patch.object(lifecycle, "DEFAULT_SYSTEMD_DIR", fake_sd), \
@@ -335,8 +336,9 @@ class TestConfigMenu(unittest.TestCase):
             rc2, out2 = self._run_script(script_2)
 
         self.assertEqual(rc2, 0)
+        self.assertIn("未输入 DELETE-VAULT，已自动改为永久保留 vault", out2)
         self.assertFalse(get_instance_config_dir("a").exists())
-        self.assertFalse((self.base / "va").exists())
+        self.assertTrue(((self.base / "va") / "hub" / "profile.md").is_file())
         self.assertFalse(get_instance_config_dir("b").exists())
         self.assertFalse((self.base / "vb").exists())
         self.assertFalse((fake_sd / "hushai-b-heal.service").exists())
