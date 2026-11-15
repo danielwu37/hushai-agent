@@ -43,8 +43,8 @@ hushai install wizard \
   --steward claude \
   --agy-light gemini-3.8-flash-low \
   --agy-heavy gemini-4-argon-high \
-  --claude-light haiku \
-  --claude-heavy sonnet
+  --claude-light sonnet \
+  --claude-heavy opus
 ```
 
 向导会自动完成四件事：

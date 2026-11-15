@@ -441,8 +441,8 @@ def _submenu_adapters(io: MenuIO, inst: str) -> None:
             updates[f"{name}.fixtures"] = fixtures
         else:
             cmd = _prompt(io, "可执行命令路径（留空则默认按类型名查找）", cur.get("command", atype))
-            light = _prompt(io, "轻档模型 (light)", cur.get("light", "haiku" if atype == "claude" else "gemini-3.8-flash-low"))
-            heavy = _prompt(io, "重档模型 (heavy)", cur.get("heavy", "sonnet" if atype == "claude" else "gemini-4-argon-high"))
+            light = _prompt(io, "轻档模型 (light)", cur.get("light", "sonnet" if atype == "claude" else "gemini-3.8-flash-low"))
+            heavy = _prompt(io, "重档模型 (heavy)", cur.get("heavy", "opus" if atype == "claude" else "gemini-4-argon-high"))
             timeout = _prompt_non_empty(io, "单次调用超时秒数", cur.get("timeout", "180"))
             updates[f"{name}.command"] = cmd or None
             updates[f"{name}.light"] = light or None

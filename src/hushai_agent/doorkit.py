@@ -141,8 +141,8 @@ def run_wizard(
     steward: str = "claude",
     agy_light: str = "gemini-3.8-flash-low",
     agy_heavy: str = "gemini-4-argon-high",
-    claude_light: str = "haiku",
-    claude_heavy: str = "sonnet",
+    claude_light: str = "sonnet",
+    claude_heavy: str = "opus",
     remote: str = "",
     no_git: bool = False,
 ) -> dict[str, Any]:

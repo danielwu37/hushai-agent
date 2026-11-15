@@ -162,6 +162,8 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(wiz_cfg.timezone, "Asia/Yangon")
         self.assertEqual(wiz_cfg.dispatch_adapter, "agy")
         self.assertEqual(wiz_cfg.digest, [("agy", "light"), ("claude", "light")])
+        self.assertEqual(wiz_cfg.adapters["claude"]["light"], "sonnet")
+        self.assertEqual(wiz_cfg.adapters["claude"]["heavy"], "opus")
 
     def test_03_export_upgrade_and_uninstall(self) -> None:
         """3. export（目录与 tar.gz，排除 token 与 .git）、upgrade（只更模板不碰画像/补充规则）、uninstall。"""
