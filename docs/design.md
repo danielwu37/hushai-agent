@@ -36,7 +36,7 @@ hushAi-agent 是一个以本地 Markdown 为唯一记忆、由常驻服务器管
 ## 3. 部署
 
 ```text
-<代码>     ~/hushai-agent/                  git clone 下来的框架
+<代码>     /opt/hushai-agent/               git clone 下来的框架
 <vault>    ~/hushai-vault/                  数据正本，本地盘；本地 git 只为审计和回滚，不推送
 <配置>     ~/.config/hushai/<实例>/         config.ini、凭据、各工具的隔离配置
 <状态>     ~/.local/state/hushai/<实例>/    runs.jsonl、digested.jsonl、runner.lock、日志

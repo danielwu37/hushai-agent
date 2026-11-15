@@ -10,7 +10,7 @@
 - **Python**：Python 3.10 及以上（只用标准库，无需安装任何第三方 Python 依赖包）。
 - **AI 命令行工具**：本机已安装并登录至少一家适配工具（推荐同时安装 `claude` 与 `agy`）。
 - **四个标准路径**（按实例名 `<实例>` 隔离）：
-  - 框架代码：`~/hushai-agent/`
+  - 框架代码：`/opt/hushai-agent/`
   - 数据正本（必须在服务器本地盘，绝不放在网盘挂载点上）：`~/hushai-vault/`
   - 实例配置：`~/.config/hushai/<实例>/`
   - 运行状态与账本：`~/.local/state/hushai/<实例>/`
@@ -22,10 +22,11 @@
 ### 第 1 步：安装命令行入口
 
 ```bash
-git clone https://github.com/danielwu37/hushai-agent.git ~/hushai-agent
-cd ~/hushai-agent
+# 非 root 用户先创建目录并赋权：sudo mkdir -p /opt/hushai-agent && sudo chown "$USER:$USER" /opt/hushai-agent
+git clone https://github.com/danielwu37/hushai-agent.git /opt/hushai-agent
+cd /opt/hushai-agent
 # 方式 A（推荐 Debian/Ubuntu）：免 pip 直接软链到 PATH
-mkdir -p ~/.local/bin && ln -sf "$PWD/bin/hushai" ~/.local/bin/hushai
+mkdir -p ~/.local/bin && ln -sf /opt/hushai-agent/bin/hushai ~/.local/bin/hushai
 # 方式 B：或在 Python venv 内以可编辑模式安装
 # python3 -m venv .venv && .venv/bin/pip install --no-build-isolation --no-deps -e .
 hushai version

@@ -73,16 +73,17 @@
 
 ```text
 请帮我部署 https://github.com/danielwu37/hushai-agent.git：
-1. 克隆到 ~/hushai-agent，将 ~/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai 并确保 PATH 包含 ~/.local/bin。
+1. 克隆到 /opt/hushai-agent（非 root 用户先创建目录并赋权：sudo mkdir -p /opt/hushai-agent && sudo chown "$USER:$USER" /opt/hushai-agent），将 /opt/hushai-agent/bin/hushai 软链到 ~/.local/bin/hushai 并确保 PATH 包含 ~/.local/bin。
 2. 运行初始化向导：hushai install wizard --instance my --vault ~/hushai-vault --timezone Asia/Shanghai --lang zh --steward claude
 3. 把向导输出的服务端命令（systemd）和体检结果列给我确认后再启用。
 ```
 
-**方式 B：自己动手 3 条命令**
+**方式 B：自己动手**
 
 ```bash
-git clone https://github.com/danielwu37/hushai-agent.git ~/hushai-agent
-mkdir -p ~/.local/bin && ln -sf ~/hushai-agent/bin/hushai ~/.local/bin/hushai
+# 若当前不是 root，先建目录并赋权：sudo mkdir -p /opt/hushai-agent && sudo chown "$USER:$USER" /opt/hushai-agent
+git clone https://github.com/danielwu37/hushai-agent.git /opt/hushai-agent
+mkdir -p ~/.local/bin && ln -sf /opt/hushai-agent/bin/hushai ~/.local/bin/hushai
 export PATH="$HOME/.local/bin:$PATH"
 
 # 一键初始化实例、记忆库、服务单元和端接入包
@@ -139,7 +140,7 @@ hushai config
 | 手机端场景 | 接入方式 | 能做什么 |
 | --- | --- | --- |
 | **Claude App（iOS / Android）** | 将常驻管家切换为 `claude`（菜单 `4`），服务器后台通过 `tmux` 保活远程管家会话；打开手机 Claude App → **Code** 连接对应远程会话。 | 随时随地像聊天一样调度整个中枢：语音记事、查历史决策、问第二大脑、让中枢 `dispatch` 后台任务给重型模型处理。 |
-| **Muse / 支持受限 SSH 的手机客户端** | 在服务器 `~/.ssh/authorized_keys` 为手机端公钥写入强制命令：<br>`restrict,command="/usr/bin/python3 -I ~/hushai-agent/bin/hushai-gate-ssh --instance my --door phone" ...` | 手机只能在受限闸门下安全读写收件、交换区与报告（`ping/ls/read/append-inbox/put/verify`），兼容旧 `00-我/...` 映射，绝不会误删或越权读取。 |
+| **Muse / 支持受限 SSH 的手机客户端** | 在服务器 `~/.ssh/authorized_keys` 为手机端公钥写入强制命令：<br>`restrict,command="/usr/bin/python3 -I /opt/hushai-agent/bin/hushai-gate-ssh --instance my --door phone" ...` | 手机只能在受限闸门下安全读写收件、交换区与报告（`ping/ls/read/append-inbox/put/verify`），兼容旧 `00-我/...` 映射，绝不会误删或越权读取。 |
 | **手机浏览器（任意系统通用）** | 运行 `hushai serve --instance my`（仅监听 `127.0.0.1`），通过 SSH 端口转发（如 Termius 本地转发 `8765` 端口）打开带令牌页面。 | 一屏查看「晨间简报」，点一下完成待办、推迟任务、批准或丢弃候选记忆，0.1 秒内即时更新状态。 |
 | **Duet 等网盘文件型应用** | 手机端接入同一套 `rclone`/网盘同步目录。 | 只读浏览 `hub/reports/morning-brief.md`、`hub/index.md` 与 `hub/notes/`；若需写入，可将草稿存入交换区或对应端收件文件，待同步回服务器后集中入库。 |
 | **ChatGPT 等暂未开放受限本地闸门的 App** | **当前版本边界**：暂未提供原生直连插件。 | 现阶段建议将有价值的回复、摘要通过手机/电脑管家或交换区 `hub/exchange/in/` 投入中枢，即刻拆解沉淀为 `sources/` 与互链 `notes/`。 |
