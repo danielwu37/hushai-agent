@@ -135,6 +135,14 @@ class TestM3d(unittest.TestCase):
         self.assertIn("--setting-sources project,local --settings", start_sh)
         self.assertTrue(bool(stat.S_IMODE((kit_dir / "start-claude-steward.sh").stat().st_mode) & stat.S_IXUSR))
         self.assertTrue((kit_dir / "agy-hooks.json").is_file())
+        agy_hooks = json.loads((kit_dir / "agy-hooks.json").read_text(encoding="utf-8"))
+        self.assertNotIn("hooks", agy_hooks)
+        self.assertIn("hushai", agy_hooks)
+        self.assertEqual(agy_hooks["hushai"]["SessionStart"][0]["type"], "command")
+        self.assertEqual(agy_hooks["hushai"]["Stop"][0]["type"], "command")
+        agy_settings = json.loads((kit_dir / "agy-settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(agy_settings, {"trustedWorkspaces": [str(self.vault.resolve())]})
+        self.assertNotIn("hooks", agy_settings)
 
         wiz_vault = self.base / "wiz-vault"
         proc_w = run_hushai_cli(

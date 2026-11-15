@@ -65,20 +65,26 @@ def render_steward_kit(cfg: InstanceConfig, out_dir: Path, door: str | None = No
     log_file = get_instance_state_dir(cfg.name) / "steward.log"
 
     hooks_obj = {
-        "SessionStart": [{"command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}"}],
-        "Stop": [
-            {"command": f"{hushai_cmd} capture --instance {cfg.name} --door {target_door}"},
-            {"command": f"{hushai_cmd} reconcile --instance {cfg.name}"},
-        ],
-        "PreToolUse": [
-            {
-                "matcher": "run_command",
-                "policy": "force_ask",
-                "description": "高风险命令（删除、外发、付款、改账号）必须经使用者确认",
-            }
-        ],
+        "hushai-steward": {
+            "SessionStart": [
+                {
+                    "type": "command",
+                    "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}",
+                }
+            ],
+            "Stop": [
+                {
+                    "type": "command",
+                    "command": f"{hushai_cmd} capture --instance {cfg.name} --door {target_door}",
+                },
+                {
+                    "type": "command",
+                    "command": f"{hushai_cmd} reconcile --instance {cfg.name}",
+                },
+            ],
+        }
     }
-    agy_settings = {"trustedWorkspaces": [str(cfg.vault)], "hooks": hooks_obj}
+    agy_settings = {"trustedWorkspaces": [str(cfg.vault)]}
     agy_settings_path = out_dir / "agy-settings.json"
     agy_settings_path.write_text(json.dumps(agy_settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -90,7 +96,7 @@ def render_steward_kit(cfg: InstanceConfig, out_dir: Path, door: str | None = No
 
     local_agents_dir = cfg.vault / ".agents"
     local_agents_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write(local_agents_dir / "hooks.json", json.dumps({"hooks": hooks_obj}, ensure_ascii=False, indent=2) + "\n", [cfg.vault])
+    atomic_write(local_agents_dir / "hooks.json", json.dumps(hooks_obj, ensure_ascii=False, indent=2) + "\n", [cfg.vault])
 
     claude_cmd = str(cfg.adapters.get("claude", {}).get("command") or "claude")
     agy_cmd = str(cfg.adapters.get("agy", {}).get("command") or "agy")

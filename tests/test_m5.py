@@ -81,7 +81,20 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         self.assertEqual(st2["backend"], "claude")
         self.assertIn('BACKEND="claude"', script_path.read_text(encoding="utf-8"))
         self.assertTrue((self.vault / ".claude" / "settings.local.json").is_file())
-        self.assertTrue((self.vault / ".agents" / "hooks.json").is_file())
+        agents_hooks_path = self.vault / ".agents" / "hooks.json"
+        self.assertTrue(agents_hooks_path.is_file())
+        agents_hooks = json.loads(agents_hooks_path.read_text(encoding="utf-8"))
+        self.assertNotIn("hooks", agents_hooks)
+        self.assertIn("hushai-steward", agents_hooks)
+        steward_hook = agents_hooks["hushai-steward"]
+        self.assertEqual([h["type"] for h in steward_hook["SessionStart"]], ["command"])
+        self.assertEqual([h["type"] for h in steward_hook["Stop"]], ["command", "command"])
+
+        agy_settings_path = script_path.parent / "agy-settings.json"
+        self.assertTrue(agy_settings_path.is_file())
+        agy_settings = json.loads(agy_settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(agy_settings, {"trustedWorkspaces": [str(self.vault)]})
+        self.assertNotIn("hooks", agy_settings)
 
         inbox_file = self.vault / "hub" / "inbox" / "2026-03-02-steward.md"
         self.assertTrue(inbox_file.is_file())

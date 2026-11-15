@@ -75,22 +75,17 @@ def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd
 def _render_agy_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd: str) -> list[Path]:
     """生成 Antigravity CLI（agy）端接入包。"""
     hooks = {
-        "hooks": {
+        "hushai": {
             "SessionStart": [
                 {
+                    "type": "command",
                     "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {door}",
                 }
             ],
             "Stop": [
                 {
+                    "type": "command",
                     "command": f"{hushai_cmd} reconcile --instance {cfg.name}",
-                }
-            ],
-            "PreToolUse": [
-                {
-                    "matcher": "run_command",
-                    "policy": "force_ask",
-                    "description": "高风险命令（删除、外发、付款、改账号）必须经使用者确认",
                 }
             ],
         }
