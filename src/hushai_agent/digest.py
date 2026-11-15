@@ -6,17 +6,17 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    brain_cfg, brain_routines, brief, candidates, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    brain_cfg, candidates, checkpoint, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
+from hushai_agent.checkpoint_verify import sha256_text
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
-from hushai_agent.digest_apply import (
-    apply_brain_step, apply_model_output, build_candidate_and_correction_lines, commit_hub_if_git,
-)
-from hushai_agent.fsio import append_line, atomic_write
+from hushai_agent.daily_state import load_daily_accumulated, merge_daily_facts
+from hushai_agent.digest_apply import apply_model_output, build_candidate_and_correction_lines
+from hushai_agent.fsio import atomic_write
 from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
-from hushai_agent.reconcile import run_mechanical_only, update_daily_state
+from hushai_agent.reconcile import drain_pending_mechanical, run_mechanical_only
 
 __all__ = ["run_digest", "run_mechanical_only"]
 
@@ -56,6 +56,8 @@ def run_digest(
         raise
 
     try:
+        if not dry_run:
+            checkpoint.recover_pending(inst_cfg)
         all_items = items.load(inst_cfg)
         pre_open_ids = {it.id for it in all_items if it.status == "open"}
         archived_ids = items.load_archived_ids(inst_cfg)
@@ -129,8 +131,8 @@ def run_digest(
             mech_corrections=mech.corrections,
             model_data=model_data,
         )
-        cand_added, cand_skipped = candidates.add(
-            inst_cfg, cand_lines, len(mech.candidates), as_of_date, ext.candidates_pending, write=not dry_run
+        cand_added, cand_skipped, expected_cand_pairs = candidates.planned_pairs(
+            inst_cfg, cand_lines, len(mech.candidates), as_of_date, ext.candidates_pending
         )
 
         today_selected = todaysel.select_today(all_items, target_for_date, inst_cfg.today_items)
@@ -200,9 +202,9 @@ def run_digest(
             "git_committed": False,
         }
         state_dir = get_instance_state_dir(inst_cfg.name)
-        accumulated = update_daily_state(
-            state_dir, summary, dry_run=dry_run, is_mechanical=False
-        )
+        run_id = checkpoint.new_run_id("digest", as_of_str)
+        prev_acc = load_daily_accumulated(state_dir, as_of_str)
+        accumulated = merge_daily_facts(prev_acc, summary, is_mechanical=False)
         daily_text = report.render_daily(accumulated)
 
         if dry_run:
@@ -224,48 +226,75 @@ def run_digest(
                 )
             atomic_write(dry_hub / "reports" / f"daily-{as_of_str}.md", daily_text, [state_dir])
         else:
-            vault = inst_cfg.vault
-            items.save(inst_cfg, all_items, as_of_date)
-            atomic_write(vault / "hub" / "today.md", today_text, [vault])
-            atomic_write(vault / "hub" / "status.md", status_text, [vault])
-            atomic_write(vault / "hub" / "status-index.md", index_text, [vault])
-            if archived_status:
-                statusfile.append_status_archive(
-                    vault / "hub" / "reports" / "status-archive.md",
-                    archived_status,
-                    [vault],
-                )
-
-            corr_file = vault / "hub" / "reports" / "corrections.md"
-            for line in corr_lines:
-                append_line(corr_file, line, [vault])
-
-            daily_file = vault / "hub" / "reports" / f"daily-{as_of_str}.md"
-            atomic_write(daily_file, daily_text, [vault])
-
+            keep_items, archive_items = items.split_archive(all_items, as_of_date)
+            open_items_text = items.render_open_items(keep_items, as_of_date)
             rest_id_set = {r.line_id for r in mech.rest}
-            if degraded:
-                advance_ids = [r.line_id for r in records if r.line_id not in rest_id_set]
-            else:
-                advance_ids = [r.line_id for r in records]
-            if advance_ids:
-                cursor.append(inst_cfg, advance_ids, as_of_date)
-
-            brief.refresh(inst_cfg)
+            advance_ids = (
+                [r.line_id for r in records if r.line_id not in rest_id_set]
+                if degraded
+                else [r.line_id for r in records]
+            )
             bcfg = brain_cfg.load_brain_config(inst_cfg)
-            if bcfg.enabled and bcfg.daily_enabled:
-                summary["brain_daily"] = brain_routines.run_daily_brain(
-                    inst_cfg, as_of=as_of_date, dry_run=dry_run
-                )
-            else:
-                summary["brain"] = apply_brain_step(
-                    inst_cfg, as_of_date, records=mech.rest, dry_run=dry_run, process_when_enabled=False
-                )
-            if bcfg.enabled and bcfg.resurface_enabled:
-                summary["brain_resurface"] = brain_routines.run_resurface(
-                    inst_cfg, as_of=as_of_date, dry_run=dry_run
-                )
-            summary["git_committed"] = commit_hub_if_git(vault, f"digest {as_of_str}")
+            plan: dict[str, Any] = {
+                "version": 1,
+                "kind": "digest",
+                "run_id": run_id,
+                "as_of": as_of_str,
+                "for_date": target_for_date.isoformat(),
+                "open_items": {
+                    "content": open_items_text,
+                    "sha256": sha256_text(open_items_text),
+                    "archived_lines": [
+                        {"id": it.id, "line": items.format_item_line(it)} for it in archive_items
+                    ],
+                },
+                "atomic_targets": {
+                    "hub/today.md": {"content": today_text, "sha256": sha256_text(today_text)},
+                    "hub/status.md": {"content": status_text, "sha256": sha256_text(status_text)},
+                    "hub/status-index.md": {"content": index_text, "sha256": sha256_text(index_text)},
+                },
+                "daily_state": {
+                    "run_id": run_id,
+                    "as_of": as_of_str,
+                    "cur_facts": summary,
+                    "is_mechanical": False,
+                    "daily_report_rel": f"hub/reports/daily-{as_of_str}.md",
+                    "daily_report_text": daily_text,
+                    "daily_report_sha256": sha256_text(daily_text),
+                },
+                "candidates_add": {
+                    "lines": cand_lines,
+                    "n_user": len(mech.candidates),
+                    "limit": ext.candidates_pending,
+                    "expected_pairs": expected_cand_pairs,
+                },
+                "corrections": corr_lines,
+                "status_archive": [
+                    {
+                        "domain": r.domain,
+                        "topic": r.topic,
+                        "summary": r.summary,
+                        "verified": r.verified.isoformat() if r.verified else None,
+                        "src": list(r.src),
+                    }
+                    for r in archived_status
+                ],
+                "advance_ids": advance_ids,
+                "closing": {
+                    "brief_required": True,
+                    "brain_mode": "daily",
+                    "brain_record_ids": [r.line_id for r in mech.rest],
+                    "brain_done": False,
+                    "resurface": bool(bcfg.enabled and bcfg.resurface_enabled),
+                    "commit_msg": f"digest {as_of_str}",
+                    "ledger_job": "digest",
+                },
+            }
+            closing_res = checkpoint.execute_commit_plan(inst_cfg, plan)
+            for k in ("brain_daily", "brain", "brain_resurface"):
+                if k in closing_res:
+                    summary[k] = closing_res[k]
+            summary["git_committed"] = bool(closing_res.get("git_committed"))
 
         note_parts = []
         if degraded:
@@ -298,3 +327,5 @@ def run_digest(
         raise
     finally:
         lock_ctx.__exit__(None, None, None)
+        if not dry_run:
+            drain_pending_mechanical(inst_cfg)

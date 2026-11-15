@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- **P0 / O1 事件流并发防丢与目标文件校验型崩溃恢复**：
+  - 新增 [`checkpoint.py`](src/hushai_agent/checkpoint.py) 与 [`checkpoint_verify.py`](src/hushai_agent/checkpoint_verify.py)（检查点落于 `<state>/checkpoints/`），恢复阶段直接对 Vault 与 State 目标文件做内容摘要、行编号与提交态核验（不盲信 JSON 检查点状态字段），防 `corrections.md`、`status-archive.md`、`closed-items.md`、`candidates.md`、`profile.md`、`AGENTS.local.md`、`routed.jsonl` 与管家回执重复追加，防 `daily/<date>.json` 双倍计数，并在 `after_cursor` 崩溃后补全 `morning-brief`、`brain_daily`、`resurface` 与 `git commit`；`heal.run_heal` 同步接入非阻塞遗留检查点接管。
+  - [`lock.py`](src/hushai_agent/lock.py) 新增 `acquire_or_mark_dirty`（落盘 dirty 标记与二次抢锁重检）及 `drain_after_unlock`，消除 `on-event` / `reconcile` / `routing` 在 `lock-busy` 下的事件漏触发。
+  - `brain_routines`（`daily` / `weekly` / `resurface` / `monthly`）与 `brain_process` 统一受 `runner.lock` 互斥保护并在释锁后排空机械积压；`brain_process` 重入前扫描既有 `notes/` 与 `sources/` 的 `source_ref` 防重复建卡。新增故障注入测试 [`test_p0_o1_resilience.py`](tests/test_p0_o1_resilience.py)。
+
 ### Fixed
 - **修复 `[brain]` 时间与星期参数未进入 systemd 单元**：`install.render_brain_units`、`install.render_units(..., with_brain=True)` 与 `hushai brain units` 改为默认读取 `config.ini` 中的 `daily_time` / `weekly_day` / `weekly_time` / `resurface_time` / `monthly_time`（`BrainConfig` 新增 `monthly_time` 并校验 `HH:MM` 与 `Mon..Sun`）；`brain-weekly.timer` 与 `monthly.timer` 模板改用变量替换，不再写死 `Sun` 与 `09:30`。
 - **修复既有 `digest.timer` 自定义时间被重生成单元覆盖**：新增 `install.detect_existing_digest_time`，`hushai install units` 与 `hushai config` 5→4 在未显式传 `--digest-time` 时默认沿用既有 `.timer` 触发时间。

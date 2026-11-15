@@ -172,9 +172,49 @@ def run_heal(
         raise ValueError(f"--before 仅支持 digest 或 weekly: {before}")
     try:
         with lock.runner_lock(inst_cfg, name="heal.lock"):
-            return _run_heal_locked(inst_cfg, before, dry_run, hooks)
+            res = _run_heal_locked(inst_cfg, before, dry_run, hooks)
     except lock.LockBusy:
         return {"ok": True, "instance": inst_cfg.name, "skipped": "另一次自检正在运行", "checks": []}
+
+    if not dry_run:
+        rec_info = _recover_abandoned_state(inst_cfg)
+        res.update(rec_info)
+    return res
+
+
+def _recover_abandoned_state(inst_cfg: InstanceConfig) -> dict[str, int]:
+    """无阻塞尝试接管遗留的半程崩溃检查点或锁冲突期间积压的事件。"""
+    from hushai_agent import checkpoint, lock
+    from hushai_agent.config_ext import load_ext
+
+    summary = {"checkpoints_recovered": 0, "routes_recovered": 0}
+    if not checkpoint.has_pending(inst_cfg):
+        return summary
+    try:
+        with lock.runner_lock(inst_cfg, name="runner.lock", wait_seconds=0.0):
+            rec = checkpoint.recover_pending(inst_cfg)
+            summary["checkpoints_recovered"] = int(rec.get("recovered") or 0)
+            dirty = lock.clear_dirty(inst_cfg, "mechanical")
+            if rec.get("recovered") or dirty:
+                from hushai_agent.reconcile import _run_mechanical_locked
+
+                _run_mechanical_locked(inst_cfg)
+    except (lock.LockBusy, Exception):
+        pass
+
+    ext = load_ext(inst_cfg)
+    try:
+        with lock.runner_lock(inst_cfg, name="route.lock", wait_seconds=0.0):
+            rec_r = checkpoint.recover_pending_routes(inst_cfg)
+            summary["routes_recovered"] = int(rec_r or 0)
+            dirty_r = lock.clear_dirty(inst_cfg, "routing")
+            if ext.routing_enabled and (rec_r or dirty_r):
+                from hushai_agent.routing import _run_routing_locked
+
+                _run_routing_locked(inst_cfg, ext)
+    except (lock.LockBusy, Exception):
+        pass
+    return summary
 
 
 def _run_heal_locked(

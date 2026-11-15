@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from hushai_agent import clock, mechanical
+from hushai_agent import clock, ledger, lock, mechanical
 from hushai_agent.brain_cfg import BrainConfig, load_brain_config, load_brain_state, save_brain_state
 from hushai_agent.brain_model import (
     UNVERIFIED,
@@ -336,6 +336,22 @@ def process_raw_items(
     # 任务前必读 hub/index.md
     read_index_first(cfg)
 
+    existing_refs: set[str] = set()
+    if not dry_run:
+        for sub in ("notes", "sources"):
+            sub_dir = hub_dir / sub
+            if sub_dir.is_dir():
+                for md in sub_dir.glob("*.md"):
+                    try:
+                        for ln in md.read_text(encoding="utf-8").splitlines():
+                            for prefix in ("- 来源：", "- 链接："):
+                                if ln.startswith(prefix):
+                                    val = ln[len(prefix) :].strip()
+                                    if val and val != UNVERIFIED:
+                                        existing_refs.add(val)
+                    except OSError:
+                        pass
+
     filed: list[dict[str, Any]] = []
     for item in raw_items:
         text = sanitize_block(item.get("text", ""))
@@ -344,6 +360,8 @@ def process_raw_items(
         domain = sanitize_single_line(item.get("domain", ""), "未分类")
         item_date = sanitize_single_line(item.get("date", ""), as_of_str)
         source_ref = sanitize_single_line(item.get("source_ref", ""), UNVERIFIED)
+        if not dry_run and source_ref != UNVERIFIED and source_ref in existing_refs:
+            continue
         my_take = item.get("my_take")
 
         # 1. 显式人物前缀或 @人物 / 承诺
@@ -521,27 +539,47 @@ def process_inbox_to_brain(
     records: Iterable[InboxRecord] | None = None,
     dry_run: bool = False,
     confirm_merge: bool = False,
+    _hold_lock: bool = True,
 ) -> dict[str, Any]:
     """扫描未加工的收件行与交换区文本并归档到 second-brain，推进 brain-state 游标。"""
     parsed_date = FlexDate.from_any(as_of_date) if as_of_date else clock.today(cfg)
     if parsed_date is None:
         parsed_date = clock.today(cfg)
-    raw_items, new_ids, new_ex = collect_unprocessed_for_brain(cfg, parsed_date, records=records)
-    result = process_raw_items(
-        cfg,
-        raw_items,
-        as_of_date=parsed_date,
-        dry_run=dry_run,
-        confirm_merge=confirm_merge,
-    )
-    if not dry_run and (new_ids or new_ex):
-        state = load_brain_state(cfg)
-        state["processed_inbox_ids"] = list(dict.fromkeys([*state.get("processed_inbox_ids", []), *new_ids]))
-        state["processed_exchange_files"] = list(dict.fromkeys([*state.get("processed_exchange_files", []), *new_ex]))
-        save_brain_state(cfg, state)
-    result["processed_inbox_count"] = len(new_ids)
-    result["processed_exchange_count"] = len(new_ex)
-    return result
+
+    lock_ctx = None
+    if _hold_lock and not dry_run:
+        try:
+            lock_ctx = lock.runner_lock(cfg, wait_seconds=lock.job_wait_seconds())
+            lock_ctx.__enter__()
+        except lock.LockBusy:
+            ledger.record(
+                cfg, "job", job="brain-process", date=parsed_date.isoformat(), dry_run=dry_run, result="failed", note="lock-busy"
+            )
+            raise
+
+    try:
+        raw_items, new_ids, new_ex = collect_unprocessed_for_brain(cfg, parsed_date, records=records)
+        result = process_raw_items(
+            cfg,
+            raw_items,
+            as_of_date=parsed_date,
+            dry_run=dry_run,
+            confirm_merge=confirm_merge,
+        )
+        if not dry_run and (new_ids or new_ex):
+            state = load_brain_state(cfg)
+            state["processed_inbox_ids"] = list(dict.fromkeys([*state.get("processed_inbox_ids", []), *new_ids]))
+            state["processed_exchange_files"] = list(dict.fromkeys([*state.get("processed_exchange_files", []), *new_ex]))
+            save_brain_state(cfg, state)
+        result["processed_inbox_count"] = len(new_ids)
+        result["processed_exchange_count"] = len(new_ex)
+        return result
+    finally:
+        if lock_ctx is not None:
+            lock_ctx.__exit__(None, None, None)
+            from hushai_agent.reconcile import drain_pending_mechanical
+
+            drain_pending_mechanical(cfg)
 
 
 def reconcile_brain_step(
@@ -563,7 +601,7 @@ def reconcile_brain_step(
     processed_info: dict[str, Any] = {"filed_count": 0, "auto_linked": []}
     if process_when_enabled and bcfg.enabled and bcfg.daily_enabled:
         processed_info = process_inbox_to_brain(
-            cfg, as_of_date=as_of_date, records=records, dry_run=dry_run, confirm_merge=False
+            cfg, as_of_date=as_of_date, records=records, dry_run=dry_run, confirm_merge=False, _hold_lock=False
         )
 
     if not has_notes and processed_info.get("filed_count", 0) == 0:

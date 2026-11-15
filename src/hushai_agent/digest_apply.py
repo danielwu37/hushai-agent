@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from hushai_agent import brain_process, items, statusfile
+from hushai_agent.fsio import append_line
 from hushai_agent.config import InstanceConfig
 from hushai_agent.inboxscan import InboxRecord
 from hushai_agent.items import FlexDate, OpenItem
@@ -189,6 +191,63 @@ def build_candidate_and_correction_lines(
         corr_lines.append(f"- {date_s}｜{clean_did}｜src={rec.line_id}")
 
     return cand_lines, corr_lines
+
+
+_CORR_SRC_RE = re.compile(r"｜src=(?P<src>[^\s｜]+)\s*$")
+
+
+def append_corrections_idempotent(
+    corr_file: Path,
+    corr_lines: list[str],
+    roots: list[Path],
+) -> int:
+    """按目标文件 hub/reports/corrections.md 既有内容与 src 编号去重，幂等追加更正行。"""
+    if not corr_lines:
+        return 0
+    existing_lines: set[str] = set()
+    existing_srcs: set[str] = set()
+    if corr_file.is_file():
+        for raw in corr_file.read_text(encoding="utf-8").splitlines():
+            s = raw.strip()
+            if not s:
+                continue
+            existing_lines.add(s)
+            m = _CORR_SRC_RE.search(s)
+            if m:
+                existing_srcs.add(m.group("src").strip())
+
+    added = 0
+    for line in corr_lines:
+        s = line.strip()
+        if not s or s in existing_lines:
+            continue
+        m = _CORR_SRC_RE.search(s)
+        src_id = m.group("src").strip() if m else ""
+        if src_id and src_id in existing_srcs:
+            continue
+        append_line(corr_file, line, roots)
+        existing_lines.add(s)
+        if src_id:
+            existing_srcs.add(src_id)
+        added += 1
+    return added
+
+
+def is_hub_git_dirty(vault_path: Path) -> bool:
+    """直接核验 vault Git 仓库中 hub/ 是否仍有未提交变更。"""
+    if not (vault_path / ".git").exists() or shutil.which("git") is None:
+        return False
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain", "--", "hub"],
+            cwd=os.fspath(vault_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return res.returncode == 0 and bool(res.stdout.strip())
+    except OSError:
+        return False
 
 
 def commit_hub_if_git(vault_path: Path, message: str) -> bool:

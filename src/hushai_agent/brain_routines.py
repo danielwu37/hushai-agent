@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 import re
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from hushai_agent import clock, items, ledger
+from hushai_agent import clock, items, ledger, lock
 from hushai_agent.brain_ask import _detect_disagreements, _extract_best_quote
 from hushai_agent.brain_cfg import load_brain_config, load_brain_state, save_brain_state
 from hushai_agent.brain_model import (
@@ -43,6 +44,38 @@ def _resolve_date(cfg: InstanceConfig, as_of: datetime.date | str | None) -> Fle
     if parsed is None:
         raise ValueError(f"非法日期: {as_of!r}")
     return parsed
+
+
+@contextmanager
+def _brain_routine_lock(
+    cfg: InstanceConfig,
+    job_name: str,
+    as_of_str: str,
+    dry_run: bool,
+    hold_lock: bool,
+) -> Iterator[None]:
+    """为独立运行的 second-brain 周期任务加 runner.lock 并在释放后排空待处理机械事件。"""
+    if not hold_lock or dry_run:
+        yield
+        return
+    try:
+        ctx = lock.runner_lock(cfg, wait_seconds=lock.job_wait_seconds())
+        ctx.__enter__()
+    except lock.LockBusy:
+        ledger.record(
+            cfg, "job", job=job_name, date=as_of_str, dry_run=dry_run, result="failed", note="lock-busy"
+        )
+        raise
+    try:
+        from hushai_agent import checkpoint
+
+        checkpoint.recover_pending(cfg)
+        yield
+    finally:
+        ctx.__exit__(None, None, None)
+        from hushai_agent.reconcile import drain_pending_mechanical
+
+        drain_pending_mechanical(cfg)
 
 
 def _open_promises(cfg: InstanceConfig) -> list[str]:
@@ -104,6 +137,7 @@ def run_daily_brain(
     as_of: datetime.date | str | None = None,
     force: bool = False,
     dry_run: bool = False,
+    _hold_lock: bool = True,
 ) -> dict[str, Any]:
     """每日 routine（21:00 口径）：加工收件、写 daily/<date>.md，并输出 3 行摘要；无新内容则静默。"""
     bcfg = load_brain_config(cfg)
@@ -113,8 +147,18 @@ def run_daily_brain(
     if not force and not bcfg.daily_enabled:
         return {"skipped": "disabled", "routine": "daily", "date": as_of_str, "silent": True}
 
+    with _brain_routine_lock(cfg, "brain-daily", as_of_str, dry_run, _hold_lock):
+        return _run_daily_brain_inner(cfg, as_of_date, as_of_str, dry_run=dry_run)
+
+
+def _run_daily_brain_inner(
+    cfg: InstanceConfig,
+    as_of_date: FlexDate,
+    as_of_str: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     read_index_first(cfg)
-    proc_res = process_inbox_to_brain(cfg, as_of_date=as_of_date, dry_run=dry_run)
+    proc_res = process_inbox_to_brain(cfg, as_of_date=as_of_date, dry_run=dry_run, _hold_lock=False)
     filed = proc_res.get("filed", [])
 
     if not filed:
@@ -217,6 +261,7 @@ def run_weekly_brain(
     as_of: datetime.date | str | None = None,
     force: bool = False,
     dry_run: bool = False,
+    _hold_lock: bool = True,
 ) -> dict[str, Any]:
     """每周 routine（周日 18:00 口径）：写 weekly.md（反复出现的想法、冲突笔记、未兑现承诺、下周 3 件事）。"""
     bcfg = load_brain_config(cfg)
@@ -226,6 +271,16 @@ def run_weekly_brain(
     if not force and not bcfg.weekly_enabled:
         return {"skipped": "disabled", "routine": "weekly", "date": as_of_str}
 
+    with _brain_routine_lock(cfg, "brain-weekly", as_of_str, dry_run, _hold_lock):
+        return _run_weekly_brain_inner(cfg, as_of_date, as_of_str, dry_run=dry_run)
+
+
+def _run_weekly_brain_inner(
+    cfg: InstanceConfig,
+    as_of_date: FlexDate,
+    as_of_str: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     read_index_first(cfg)
     docs = list_brain_markdown_files(cfg, ("notes", "sources", "projects", "daily"))
     token_counter: Counter[str] = Counter()
@@ -368,6 +423,7 @@ def run_resurface(
     as_of: datetime.date | str | None = None,
     force: bool = False,
     dry_run: bool = False,
+    _hold_lock: bool = True,
 ) -> dict[str, Any]:
     """每日一次唤醒一条与当前工作相关的旧笔记（不修改旧笔记，不另起守护进程）。"""
     bcfg = load_brain_config(cfg)
@@ -377,6 +433,18 @@ def run_resurface(
     if not force and not bcfg.resurface_enabled:
         return {"skipped": "disabled", "routine": "resurface", "date": as_of_str}
 
+    with _brain_routine_lock(cfg, "brain-resurface", as_of_str, dry_run, _hold_lock):
+        return _run_resurface_inner(cfg, bcfg, as_of_date, as_of_str, force=force, dry_run=dry_run)
+
+
+def _run_resurface_inner(
+    cfg: InstanceConfig,
+    bcfg: Any,
+    as_of_date: FlexDate,
+    as_of_str: str,
+    force: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     state = load_brain_state(cfg)
     history: list[dict[str, str]] = list(state.get("resurface_history", []))
     if not force and any(h.get("date") == as_of_str for h in history):
@@ -452,6 +520,7 @@ def run_monthly_maintenance(
     confirm_merge: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    _hold_lock: bool = True,
 ) -> dict[str, Any]:
     """每月维护：合并重复（需同意）、修断链、标记 6 个月孤立笔记、清理 index.md 至 <=200 行，并列出全部改动。"""
     bcfg = load_brain_config(cfg)
@@ -462,6 +531,19 @@ def run_monthly_maintenance(
     if not force and not bcfg.monthly_enabled:
         return {"skipped": "disabled", "routine": "monthly", "date": as_of_str}
 
+    with _brain_routine_lock(cfg, "brain-monthly", as_of_str, dry_run, _hold_lock):
+        return _run_monthly_inner(cfg, bcfg, as_of_date, as_of_str, ym_str, confirm_merge=confirm_merge, dry_run=dry_run)
+
+
+def _run_monthly_inner(
+    cfg: InstanceConfig,
+    bcfg: Any,
+    as_of_date: FlexDate,
+    as_of_str: str,
+    ym_str: str,
+    confirm_merge: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     hub_dir = cfg.vault / "hub"
     _, existing_index = read_index_first(cfg)
     changes: list[str] = []

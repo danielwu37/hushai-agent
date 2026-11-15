@@ -140,11 +140,20 @@ def update_daily_state(
     cur: dict[str, Any],
     dry_run: bool = False,
     is_mechanical: bool = False,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """合并当日运行事实；非演练模式时持久化至 <状态目录>/daily/<日期>.json。"""
+    """合并当日运行事实；非演练模式时按 run_id 幂等持久化至 <状态目录>/daily/<日期>.json。"""
     date_str = str(cur["date"])
     prev = load_daily_accumulated(state_dir, date_str)
+    applied_runs = [str(r) for r in (prev.get("applied_runs") or []) if str(r)]
+    if run_id and run_id in applied_runs:
+        return prev
     merged = merge_daily_facts(prev, cur, is_mechanical=is_mechanical)
+    if run_id:
+        applied_runs.append(run_id)
+        merged["applied_runs"] = applied_runs[-200:]
+    elif applied_runs:
+        merged["applied_runs"] = applied_runs[-200:]
     if not dry_run:
         daily_path = state_dir / "daily" / f"{date_str}.json"
         atomic_write(

@@ -73,6 +73,10 @@ def run_weekly(
         raise
 
     try:
+        if not dry_run:
+            from hushai_agent import checkpoint
+
+            checkpoint.recover_pending(inst_cfg)
         all_items = items.load(inst_cfg)
         raw_status_rows = statusfile.load(inst_cfg)
         status_rows, archived_status = statusfile.split_archive_by_age(
@@ -150,7 +154,7 @@ def run_weekly(
         ppc_res = ppc.propose_probe_compose(inst_cfg, as_of_date, dry_run=dry_run)
         bcfg = brain_cfg.load_brain_config(inst_cfg)
         brain_weekly_res = (
-            brain_routines.run_weekly_brain(inst_cfg, as_of=as_of_date, dry_run=dry_run)
+            brain_routines.run_weekly_brain(inst_cfg, as_of=as_of_date, dry_run=dry_run, _hold_lock=False)
             if (bcfg.enabled and bcfg.weekly_enabled)
             else {"skipped": "disabled"}
         )
@@ -188,3 +192,7 @@ def run_weekly(
         raise
     finally:
         lock_ctx.__exit__(None, None, None)
+        if not dry_run:
+            from hushai_agent.reconcile import drain_pending_mechanical
+
+            drain_pending_mechanical(inst_cfg)

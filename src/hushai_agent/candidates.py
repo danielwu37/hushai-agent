@@ -122,6 +122,51 @@ def format_errors(vault: Path) -> list[str]:
     return [ln for ln in bad if ln.startswith("- [")]
 
 
+def _select_additions(
+    cfg: InstanceConfig,
+    legacy_lines: list[str],
+    n_user: int,
+    as_of: Any,
+    limit: int,
+) -> tuple[list[Candidate], list[Candidate], int]:
+    """根据当前 candidates.md 计算待加入候选列表、全部候选与超限跳过数。"""
+    cands = load(cfg)
+    seen = {(c.text, c.src) for c in cands}
+    date_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    to_add: list[Candidate] = []
+    skipped = 0
+    for idx, line in enumerate(legacy_lines):
+        m = LEGACY_RE.match(line.strip())
+        if not m or (m.group("text").strip(), m.group("src").strip()) in seen:
+            continue
+        if idx >= n_user and len(pending(cands)) >= limit:
+            skipped += 1
+            continue
+        cand = Candidate(
+            id=_next_id(cands, date_str),
+            kind=m.group("kind").strip(),
+            text=m.group("text").strip(),
+            added=date_str,
+            src=m.group("src").strip(),
+        )
+        cands.append(cand)
+        to_add.append(cand)
+        seen.add((cand.text, cand.src))
+    return to_add, cands, skipped
+
+
+def planned_pairs(
+    cfg: InstanceConfig,
+    legacy_lines: list[str],
+    n_user: int,
+    as_of: Any,
+    limit: int,
+) -> tuple[int, int, list[list[str]]]:
+    """预计算本次写入会加入的 (text, src) 对与跳过数（不改文件）。"""
+    to_add, _, skipped = _select_additions(cfg, legacy_lines, n_user, as_of, limit)
+    return len(to_add), skipped, [[c.text, c.src] for c in to_add]
+
+
 def add(
     cfg: InstanceConfig,
     legacy_lines: list[str],
@@ -134,26 +179,10 @@ def add(
 
     legacy_lines 是「- 日期｜kind｜文本｜src=…」形式；前 n_user 条是使用者自己写的，不受上限限制。
     """
-    cands = load(cfg)
-    seen = {(c.text, c.src) for c in cands}
-    date_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
-    added = skipped = 0
-    for idx, line in enumerate(legacy_lines):
-        m = LEGACY_RE.match(line.strip())
-        if not m or (m.group("text").strip(), m.group("src").strip()) in seen:
-            continue
-        if idx >= n_user and len(pending(cands)) >= limit:
-            skipped += 1
-            continue
-        cands.append(Candidate(
-            id=_next_id(cands, date_str), kind=m.group("kind").strip(), text=m.group("text").strip(),
-            added=date_str, src=m.group("src").strip(),
-        ))
-        seen.add((cands[-1].text, cands[-1].src))
-        added += 1
-    if write and added:
+    to_add, cands, skipped = _select_additions(cfg, legacy_lines, n_user, as_of, limit)
+    if write and to_add:
         save(cfg, cands)
-    return added, skipped
+    return len(to_add), skipped
 
 
 def _append_under(text: str, heading: str, line: str) -> str:
@@ -184,7 +213,9 @@ def decide(cfg: InstanceConfig, cand_id: str, action: str, to: str, date_str: st
         if write:
             path = cfg.vault / rel
             old = path.read_text(encoding="utf-8") if path.is_file() else ""
-            atomic_write(path, _append_under(old, heading, f"- {cand.text}（{date_str} 批准，{cand.id}）"), [cfg.vault])
+            marker = f"，{cand.id}）"
+            if not any(ln.lstrip().startswith("- ") and marker in ln for ln in old.splitlines()):
+                atomic_write(path, _append_under(old, heading, f"- {cand.text}（{date_str} 批准，{cand.id}）"), [cfg.vault])
         cand.status, cand.to = "approved", target
     else:
         cand.status = "discarded"

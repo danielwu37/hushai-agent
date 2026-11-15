@@ -248,10 +248,24 @@ def append_status_archive(
     archived_rows: Iterable[StatusRow],
     roots: Iterable[Path],
 ) -> None:
-    """将归档的近况行追加写入 hub/reports/status-archive.md。"""
+    """将归档的近况行幂等追加写入 hub/reports/status-archive.md（按目标文件内容去重）。"""
     root_list = list(roots)
+    existing_lines: set[str] = set()
+    existing_keys: set[tuple[str, str, Any, tuple[str, ...]]] = set()
+    if archive_path.is_file():
+        raw_text = archive_path.read_text(encoding="utf-8")
+        existing_lines = {ln.strip() for ln in raw_text.splitlines() if ln.strip()}
+        for old_row in parse_status(raw_text):
+            existing_keys.add((old_row.domain, old_row.topic, old_row.verified, tuple(old_row.src)))
+
     for row in archived_rows:
-        append_line(archive_path, format_status_row(row), root_list)
+        formatted = format_status_row(row)
+        key = (row.domain, row.topic, row.verified, tuple(row.src))
+        if formatted.strip() in existing_lines or key in existing_keys:
+            continue
+        append_line(archive_path, formatted, root_list)
+        existing_lines.add(formatted.strip())
+        existing_keys.add(key)
 
 
 def load(cfg: InstanceConfig | Path | str) -> list[StatusRow]:

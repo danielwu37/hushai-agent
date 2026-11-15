@@ -7,10 +7,10 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from hushai_agent.config import InstanceConfig
-from hushai_agent.fsio import ensure_dir
+from hushai_agent.fsio import atomic_write, ensure_dir
 from hushai_agent.guard import ensure_writable
 from hushai_agent.paths import get_instance_state_dir
 
@@ -68,3 +68,79 @@ def runner_lock(cfg: InstanceConfig | str | Path, name: str = "runner.lock", wai
                 os.close(fd)
     except LockBusy:
         raise
+
+
+def _dirty_flag_path(cfg: InstanceConfig | str | Path, key: str) -> Path:
+    state_dir = _resolve_state_dir(cfg)
+    safe_key = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in key)
+    return state_dir / f"dirty-{safe_key}.flag"
+
+
+def mark_dirty(cfg: InstanceConfig | str | Path, key: str) -> Path:
+    """在锁冲突时落盘待补跑标记，避免实时事件被静默丢弃。"""
+    state_dir = _resolve_state_dir(cfg)
+    flag_path = _dirty_flag_path(cfg, key)
+    atomic_write(flag_path, "1\n", [state_dir])
+    return flag_path
+
+
+def has_dirty(cfg: InstanceConfig | str | Path, key: str) -> bool:
+    """判断是否存在待补跑标记。"""
+    return _dirty_flag_path(cfg, key).is_file()
+
+
+def clear_dirty(cfg: InstanceConfig | str | Path, key: str) -> bool:
+    """原子清除待补跑标记，若原先存在返回 True。"""
+    flag_path = _dirty_flag_path(cfg, key)
+    try:
+        os.unlink(ensure_writable(flag_path, [_resolve_state_dir(cfg)]))
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def acquire_or_mark_dirty(
+    cfg: InstanceConfig | str | Path,
+    key: str,
+    lock_name: str = "runner.lock",
+) -> Any | None:
+    """非阻塞拿锁；锁忙时落盘 dirty 标记并立刻复试一次（消除释锁竞态窗口）。"""
+    try:
+        ctx = runner_lock(cfg, name=lock_name, wait_seconds=0.0)
+        ctx.__enter__()
+        return ctx
+    except LockBusy:
+        mark_dirty(cfg, key)
+        try:
+            ctx = runner_lock(cfg, name=lock_name, wait_seconds=0.0)
+            ctx.__enter__()
+            clear_dirty(cfg, key)
+            return ctx
+        except LockBusy:
+            return None
+
+
+def drain_after_unlock(
+    cfg: InstanceConfig | str | Path,
+    key: str,
+    lock_name: str,
+    callback: Callable[[], Any],
+    max_rounds: int = 5,
+) -> int:
+    """持锁者释放锁后调用：若存在 dirty 标记则重拿锁排空新到达事件，最多循环 max_rounds 轮。"""
+    drained = 0
+    for _ in range(max_rounds):
+        if not has_dirty(cfg, key):
+            break
+        try:
+            ctx = runner_lock(cfg, name=lock_name, wait_seconds=0.0)
+            ctx.__enter__()
+        except LockBusy:
+            break
+        try:
+            clear_dirty(cfg, key)
+            callback()
+            drained += 1
+        finally:
+            ctx.__exit__(None, None, None)
+    return drained
