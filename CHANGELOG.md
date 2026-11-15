@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+<!-- 后续新增改动先写在此处，下个版本发布时自动归档至版本章节 -->
+
+## [0.2.1] - 2026-11-15
+
 ### Added
 - **P0 / O1 事件流并发防丢与目标文件校验型崩溃恢复**：
   - 新增 [`checkpoint.py`](src/hushai_agent/checkpoint.py) 与 [`checkpoint_verify.py`](src/hushai_agent/checkpoint_verify.py)（检查点落于 `<state>/checkpoints/`），恢复阶段直接对 Vault 与 State 目标文件做内容摘要、行编号与提交态核验（绝不轻信 JSON `stage` / `brain_done` 字段）：覆盖 `open-items.md`、`closed-items.md`、`today.md`、`status.md`、`status-index.md`、`corrections.md`、`status-archive.md`、`candidates.md`、`profile.md`、`AGENTS.local.md`、`decisions.md`、`lessons.md`、`morning-brief.md` 与 `.html` 渲染一致性、`routed.jsonl` 与管家回执、`daily/<date>.json`、`notes/`、`sources/`、`people/`、`projects/`、`daily/<date>.md` 与 `index.md` 链接；损坏或结构非法检查点自动隔离至 `checkpoints/corrupt-*`；`heal.run_heal` 同步接入非阻塞遗留检查点接管。
@@ -14,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **P0 / O2 `<state>/outbox/` 纯文件交付状态机（at-least-once）**：
   - 新增 [`outbox.py`](src/hushai_agent/outbox.py)、[`outbox_store.py`](src/hushai_agent/outbox_store.py) 与 [`cli_outbox.py`](src/hushai_agent/cli_outbox.py)（注册 `hushai outbox <status|list|flush|recover|retry|archive>`），实现 `<state>/outbox/{pending,sending,sent,failed,archive}/` 分态迁移（以单调递增 `transition_seq` 防止同时间戳或 `SIGKILL` 写删间隙崩溃后的重复状态覆盖）、独占锁下 `sending` 中断回收、指数退避重试、幂等键去重（支持 `dedupe.json` 丢失或损坏时连同 `archive/` 全量重建与诊断健康度上报、且空实例静默）、DST/跨时区 UTC instant 比较及历史归档，显式声明 **at-least-once（至少一次）** 投递语义（不宣称外部消息恰好发送一次）。
   - 集成至 [`checkpoint_verify.py`](src/hushai_agent/checkpoint_verify.py)（`exchange_out` 交付登记）、[`gate.py`](src/hushai_agent/gate.py)（`check-inbox --ack` 标定 `acked_at`）、[`on_event.py`](src/hushai_agent/on_event.py) 与 [`heal.py`](src/hushai_agent/heal.py)（无待投递/待恢复信封保持完全静默，并在崩后或索引损坏时保留 `today.md` 24 小时告警冷却去重）。新增测试 [`test_p0_o2_outbox.py`](tests/test_p0_o2_outbox.py)（8 项生命周期、同时间戳双份对账、真实 `SIGKILL`、`archive` 兜底重建及跨时区/DST/时钟回拨与 `heal` 崩后去重验证）。
+- **自动化发布工作流与版本校验工具**：
+  - 新增纯标准库工具 [`tools/release_tool.py`](tools/release_tool.py)（支持 `bump` / `verify` / `notes` / `publish`）：一键同步 `pyproject.toml`、`__init__.py`、`README.md` 与 `CHANGELOG.md` 版本号、提取版本说明与本次提交清单，并在全量测试通过后自动打标推送、创建或更新 GitHub Release；配套单测 [`tests/test_release_tool.py`](tests/test_release_tool.py)。
+  - 新增 GitHub Actions 工作流模板 [`tools/workflows/ci.yml`](tools/workflows/ci.yml) 与 [`tools/workflows/release.yml`](tools/workflows/release.yml)（为避免 OAuth 凭据缺少 `workflow` scope 时阻塞推送，工作流模板存放在 `tools/workflows/`，待授予 `workflow` 权限后复制至 `.github/workflows/` 即可启用云端标签自动发布），并在 [`docs/admin-guide.md`](docs/admin-guide.md) 第 11 节补充完整操作与版本查看指引。
 
 ### Fixed
 - **修复 `[brain]` 时间与星期参数未进入 systemd 单元**：`install.render_brain_units`、`install.render_units(..., with_brain=True)` 与 `hushai brain units` 改为默认读取 `config.ini` 中的 `daily_time` / `weekly_day` / `weekly_time` / `resurface_time` / `monthly_time`（`BrainConfig` 新增 `monthly_time` 并校验 `HH:MM` 与 `Mon..Sun`）；`brain-weekly.timer` 与 `monthly.timer` 模板改用变量替换，不再写死 `Sun` 与 `09:30`。

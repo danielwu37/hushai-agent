@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要生成或更新的发布标签（例如 v0.2.1）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with full git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Resolve release tag and version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          TITLE="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG" | head -n1)"
+          if [ -z "$TITLE" ]; then
+            TITLE="$TAG"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "title<<__HUSHAI_EOF__"
+            echo "$TITLE"
+            echo "__HUSHAI_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify version consistency across repo and CHANGELOG
+        run: python3 tools/release_tool.py verify "${{ steps.meta.outputs.version }}"
+
+      - name: Run full unit test suite
+        env:
+          PYTHONPATH: src
+        run: python3 -m unittest discover -s tests -t .
+
+      - name: Build release notes from CHANGELOG and commits
+        run: python3 tools/release_tool.py notes "${{ steps.meta.outputs.version }}" --out /tmp/release-notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TITLE: ${{ steps.meta.outputs.title }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file /tmp/release-notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "$TITLE" --notes-file /tmp/release-notes.md
+          fi

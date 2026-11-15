@@ -215,3 +215,46 @@ log_file = /var/log/hushai-<实例>-gate.log
 restrict,command="/usr/bin/python3 -I /path/to/hushai-agent/bin/hushai-gate-ssh --instance <实例> --door muse" ssh-ed25519 AAAA...
 ```
 
+---
+
+## 11. 版本查看与自动发布工作流
+
+### 如何知道当前部署版本及更新了什么
+
+```bash
+# 查看本机当前安装版本号
+hushai version
+
+# 查看完整版本更新说明
+cat /opt/hushai-agent/CHANGELOG.md
+
+# 拉取远端标签与代码，查看即将升级的提交清单
+git -C /opt/hushai-agent fetch --tags
+git -C /opt/hushai-agent log HEAD..origin/master --oneline
+```
+
+或直接访问仓库 [GitHub Releases](https://github.com/danielwu37/hushai-agent/releases)，每个发布版本都会列出人类可读的功能/修复摘要以及对应的提交列表。
+
+### 自动发布工作流如何运作
+
+项目提供“本地一键自动化发布”与“GitHub Actions 云端发布模板”两种协同方式（二者共用同一套提取与校验脚本 [`tools/release_tool.py`](../tools/release_tool.py)）：
+
+1. **本地一键发布（开箱即用，不依赖 `workflow` OAuth 权限）**：
+   ```bash
+   # 1) 同步四处版本号并把 CHANGELOG.md 的 [Unreleased] 升格为 0.2.2
+   python3 tools/release_tool.py bump 0.2.2
+   git add pyproject.toml src/hushai_agent/__init__.py README.md CHANGELOG.md
+   git commit -m "release(v0.2.2): <一句话摘要>"
+
+   # 2) 一条命令自动：校验版本一致 → 跑通全量测试 → 打标并推送 → 提取变更说明与提交清单创建 GitHub Release
+   python3 tools/release_tool.py publish 0.2.2 --title "v0.2.2: <Release 标题>"
+   ```
+
+2. **启用 GitHub Actions 云端自动测试与标签自动发版（可选）**：
+   仓库已在 [`tools/workflows/ci.yml`](../tools/workflows/ci.yml) 与 [`tools/workflows/release.yml`](../tools/workflows/release.yml) 备好全套 GitHub Actions 配置。GitHub 规定向 `.github/workflows/` 推送文件需要账号令牌具备 `workflow` scope；授予该权限后执行一次即可启用云端 CI 与“推送 `v*` 标签自动发布 Release”：
+   ```bash
+   gh auth refresh -h github.com -s workflow
+   mkdir -p .github/workflows && cp tools/workflows/*.yml .github/workflows/
+   git add .github/workflows && git commit -m "ci: enable GitHub Actions CI and tag release" && git push
+   ```
+

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hushai-agent"
-version = "0.2.0"
+version = "0.2.1"
 description = "以本地 Markdown 文件夹为唯一记忆的个人 AI 框架"
 readme = "README.md"
 requires-python = ">=3.10"
