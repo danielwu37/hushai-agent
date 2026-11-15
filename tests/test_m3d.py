@@ -129,6 +129,7 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
         claude_cfg = json.loads((kit_dir / "claude-settings.json").read_text(encoding="utf-8"))
         self.assertIn("Bash(rm -rf /*)", claude_cfg["permissions"]["deny"])
+        self.assertTrue(claude_cfg["claudeMdExcludes"][0].endswith("CLAUDE.md"))
         self.assertIn("SessionStart", claude_cfg["hooks"])
         self.assertIn("Stop", claude_cfg["hooks"])
         start_sh = (kit_dir / "start-claude-steward.sh").read_text(encoding="utf-8")

@@ -22,9 +22,17 @@ DENY_RULES = [
 ]
 
 
+def _user_claude_md() -> str:
+    """宿主机用户级 CLAUDE.md 路径（尊重 CLAUDE_CONFIG_DIR）。"""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    return str(Path(base) / "CLAUDE.md")
+
+
 def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd: str) -> list[Path]:
     """生成 Claude 端接入包（采用 --setting-sources project,local --settings 同账号零冲突方案）。"""
     settings = {
+        # claude remote-control 不接受 --setting-sources，用 claudeMdExcludes 挡住宿主机用户级 CLAUDE.md
+        "claudeMdExcludes": [_user_claude_md()],
         "permissions": {
             "deny": DENY_RULES,
         },

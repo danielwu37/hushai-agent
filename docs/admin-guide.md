@@ -183,7 +183,7 @@ hushai steward restart --instance <实例>
 
 - **当后端为 `claude` 时**：
   `start-steward.sh` 运行 `claude remote-control --name "hushAi 管家" --spawn same-dir --permission-mode acceptEdits`。手机打开 Claude App（同一账号），在会话列表选择 `hushAi 管家` 即可直接对话。
-  > 注：`claude remote-control` 子命令解析器不接受 `--setting-sources` 与 `--settings` 参数；会话在 `vault` 目录启动时自动加载 `<vault>/CLAUDE.md` 与 `<vault>/.claude/settings.local.json`，并通过环境变量 `HUB_CAPTURE_CHILD=1` 跳过宿主机全局旧钩子，实现同账号零冲突隔离。
+  > 注：`claude remote-control` 子命令解析器不接受 `--setting-sources` 与 `--settings` 参数；会话在 `vault` 目录启动时自动加载 `<vault>/CLAUDE.md` 与 `<vault>/.claude/settings.local.json`，并通过环境变量 `HUB_CAPTURE_CHILD=1` 跳过宿主机全局旧钩子；`settings.local.json` 里的 `claudeMdExcludes` 排除宿主机 `~/.claude/CLAUDE.md`（尊重 `CLAUDE_CONFIG_DIR`），实现同账号零冲突隔离。
 - **当后端为 `agy` 时**：
   `start-steward.sh` 运行 `agy --remote-control --mode accept-edits --settings <doorkit>/agy-settings.json`。
   > 注：`agy-settings.json` 仅包含 `settings.json` 合法字段（如 `trustedWorkspaces`）；生命周期钩子由工作区 `<vault>/.agents/hooks.json` 加载。
