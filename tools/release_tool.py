@@ -285,6 +285,18 @@ def publish_release(
             check=False,
         )
         if exists_proc.returncode == 0:
+            can_edit = (
+                subprocess.run(
+                    ["gh", "release", "edit", "--help"],
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+            if not can_edit:
+                raise ValueError(f"Release {tag} 已存在，且当前 gh CLI 不支持 edit；请升级 gh 或先删除旧 Release。")
             _run_cmd_checked(
                 ["gh", "release", "edit", tag, "--title", resolved_title, "--notes-file", str(notes_file)],
                 cwd=root,
@@ -292,7 +304,7 @@ def publish_release(
             action = "updated"
         else:
             _run_cmd_checked(
-                ["gh", "release", "create", tag, "--verify-tag", "--title", resolved_title, "--notes-file", str(notes_file)],
+                ["gh", "release", "create", tag, "--title", resolved_title, "--notes-file", str(notes_file)],
                 cwd=root,
             )
             action = "created"
