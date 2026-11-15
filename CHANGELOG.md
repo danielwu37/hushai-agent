@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- **修复 `[brain]` 时间与星期参数未进入 systemd 单元**：`install.render_brain_units`、`install.render_units(..., with_brain=True)` 与 `hushai brain units` 改为默认读取 `config.ini` 中的 `daily_time` / `weekly_day` / `weekly_time` / `resurface_time` / `monthly_time`（`BrainConfig` 新增 `monthly_time` 并校验 `HH:MM` 与 `Mon..Sun`）；`brain-weekly.timer` 与 `monthly.timer` 模板改用变量替换，不再写死 `Sun` 与 `09:30`。
+- **修复既有 `digest.timer` 自定义时间被重生成单元覆盖**：新增 `install.detect_existing_digest_time`，`hushai install units` 与 `hushai config` 5→4 在未显式传 `--digest-time` 时默认沿用既有 `.timer` 触发时间。
+- **修复 `hushai serve` 启动后缓存配置不生效**：每次鉴权请求实时重载 `config.ini`（`Handler._live_cfg`），修改 `known_doors`、`today_items` 等配置无需重启即可生效，被移除的端即时返回 `403`。
+- **修复 `run_daily_brain` 同日多次覆盖日报明细**：同一天多次执行 `daily` 时改为去重累计合并当日 `## 今日归档明细`，不再覆盖早先归档记录。
+- **修复 `hushai sync` 漏传第二大脑目录**：`PUSH_INCLUDES` 补入 `/index.md`、`/weekly.md`、`/notes/**`、`/sources/**`、`/people/**`、`/projects/**`、`/daily/**`，同时保留 `[privacy] local_only` 排除规则且不触碰 `domains/`。
+- **修复配置校验、大小写与回滚漏洞**：`update_ini_text` 支持大小写不敏感键匹配；新增 `validate_cross_constraints` 拦截非法 `vault`、`local_only` 越界路径、孤立适配器引用、`approval`/`trusted` 越界端及与既有收件冲突的领域修改并自动回滚；禁止 `sync.timeout` / `exchange_max_kb` / `candidates_pending` 填 `0`；`set_brain_routine_enabled` 与 `steward.set_backend` 统一经 `config_edit` 原子写入。
+- **修复第二大脑自动补链与 Ask 检索质量问题**：新增 `extract_semantic_body` 剔除头部元数据与 `## 关联笔记` 段落并过滤状态模板词/日期/`L-...` 编号/疑问虚词；`brain ask` 仅在正文选引用并提高数量提问数值加权；`_extract_title` 规整删除 URL 后的多余空白。
+
+### Changed
+- **`hushai config` 菜单反馈与单元/Vault 联动**：每次保存明确提示 `[生效方式]`；修改时区、`vault`、`[brain]` 开关与时间后主动询问一键重生成 systemd 单元并给出 `systemctl` 命令；`vault` 未初始化时询问一键初始化；回退/路由链支持输入 `clear` 清空；适配器名统一小写规范化；补充 `monthly_time` 设置项与同步口径说明。
+- **文档与测试补充**：对齐 `README.md` 与 `docs/second-brain.md` 中关于手工同步边界、`monthly` 定时器前提及 `人物：`/`项目：`/`@姓名` 触发说明；`tests/test_config_menu.py` 新增 `test_04`～`test_07` 行为传播与回归测试。
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
