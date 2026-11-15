@@ -1,0 +1,16 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: one-way cloud sync by file ownership
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{USER}}
+Environment=HOME={{HOME}}
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
+Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
+ExecStart={{HUSHAI}} sync --instance {{INSTANCE}}
+Nice=10
+MemoryMax={{MEMORY_MAX}}
+TimeoutStartSec=10min

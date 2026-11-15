@@ -14,6 +14,7 @@ from hushai_agent.paths import get_config_root, get_state_root
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "systemd"
 TEMPLATES_BRAIN_DIR = Path(__file__).resolve().parent / "templates" / "systemd-brain"
+TEMPLATES_SYNC_DIR = Path(__file__).resolve().parent / "templates" / "systemd-sync"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MEMORY_RE = re.compile(r"^\d+[KMG]$")
 DEFAULT_DIGEST_TIME = "21:30"
@@ -148,7 +149,7 @@ def render_units(
     port: int = DEFAULT_PORT,
     with_brain: bool = False,
 ) -> list[Path]:
-    """渲染全部单元模板，返回写出的文件（默认保持 10 个核心单元；with_brain=True 时追加 second-brain 单元）。"""
+    """渲染全部单元模板，返回写出的文件（默认 10 个核心单元；配了 [sync] remote 时追加同步定时器；with_brain=True 时追加 second-brain 单元）。"""
     out = Path(out_dir).expanduser()
     if not out.is_dir():
         raise ValueError(f"输出目录不存在: {out_dir}")
@@ -172,6 +173,11 @@ def render_units(
         "{{STATE_ROOT}}": str(get_state_root()),
     }
     written = _render_from_dir(TEMPLATES_DIR, out, values)
+    # 配了 [sync] remote 才渲染同步定时器（每 15 分钟一轮）；没配就不出，免得账本里每轮记一次失败
+    from hushai_agent.config_ext import load_ext
+
+    if load_ext(cfg).sync_remote:
+        written.extend(_render_from_dir(TEMPLATES_SYNC_DIR, out, values))
     if with_brain:
         written.extend(render_brain_units(cfg, out, memory_max=memory_max))
     return written

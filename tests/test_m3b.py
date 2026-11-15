@@ -276,6 +276,19 @@ class TestInstallUnits(Base):
         self.assertIn("systemctl enable --now", proc.stdout)
         self.assertEqual(before, sorted(str(p) for p in self.vault.rglob("*")))
 
+    def test_render_sync_timer_when_remote_set(self) -> None:
+        with self.cfg_file.open("a", encoding="utf-8") as f:
+            f.write("\n[sync]\nremote = onedrive:demo\n")
+        out = self.base / "units_sync"
+        out.mkdir()
+        written = install.render_units(self.cfg(), out)
+        names = sorted(p.name for p in written)
+        self.assertEqual(len(names), 12)
+        self.assertIn("hushai-demo-sync.timer", names)
+        blob = (out / "hushai-demo-sync.service").read_text(encoding="utf-8")
+        self.assertIn("sync --instance demo", blob)
+        self.assertNotIn("{{", blob)
+
 
     def test_command_runs_without_install(self) -> None:
         cmd = install._hushai_command()
