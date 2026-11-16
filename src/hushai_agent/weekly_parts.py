@@ -192,17 +192,37 @@ def make_weekly_validator(
     return validate
 
 
-def render_insights(insights: list[dict[str, Any]]) -> str:
-    """渲染 hub/insights.md 文本。"""
+CARRY_HEADING = "## 往期观察（本周没有新证据复核，原样保留）"
+CARRY_MAX = 40
+
+
+def carry_over_bullets(old_text: str, fresh_lines: list[str]) -> list[str]:
+    """从上一版 insights.md 取出本周没有重写到的条目（去重、保持原顺序、最多 CARRY_MAX 条）。"""
+    seen = {ln.strip() for ln in fresh_lines}
+    out: list[str] = []
+    for ln in (old_text or "").splitlines():
+        s = ln.strip()
+        if s.startswith("- ") and s not in seen and s not in out:
+            out.append(s)
+    return out[:CARRY_MAX]
+
+
+def render_insights(insights: list[dict[str, Any]], old_text: str = "") -> str:
+    """渲染 hub/insights.md：本周新结论在前，上一版里本周没覆盖的条目原样留在「往期观察」，不整份清空。"""
     lines = [INSIGHTS_HEADER_QUOTE, "", "# 观察与洞察（insights.md）", ""]
-    if not insights:
+    fresh: list[str] = []
+    for entry in insights:
+        basis_label = "已证" if entry["basis"] == "evidenced" else "推测"
+        srcs = ",".join(str(s).strip() for s in entry["source_line_ids"] if str(s).strip())
+        text = str(entry["text"]).replace("\r", " ").replace("\n", " ").strip()
+        fresh.append(f"- {text}〔{basis_label}｜{srcs}〕")
+    carried = carry_over_bullets(old_text, fresh)
+    if not fresh and not carried:
         lines.append("（暂无洞察记录）")
-    else:
-        for entry in insights:
-            basis_label = "已证" if entry["basis"] == "evidenced" else "推测"
-            srcs = ",".join(str(s).strip() for s in entry["source_line_ids"] if str(s).strip())
-            text = str(entry["text"]).replace("\r", " ").replace("\n", " ").strip()
-            lines.append(f"- {text}〔{basis_label}｜{srcs}〕")
+    lines.extend(fresh)
+    if carried:
+        lines.extend(["", CARRY_HEADING, ""])
+        lines.extend(carried)
     lines.append("")
     return "\n".join(lines)
 

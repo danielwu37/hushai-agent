@@ -206,6 +206,8 @@ hushai steward restart --instance <实例>
 [gate]
 read_roots = workos=/path/to/workos, music=/path/to/music
 private_paths_file = /path/to/private-paths.txt
+# 可选：private_paths_file 的规则只作用于这些读根（相对该根匹配），逗号分隔
+private_paths_scope = workos
 write_allow = 00-我/交换/入/, hub/exchange/in/, music/Playlists/_输入清单/待下载/
 log_file = /var/log/hushai-<实例>-gate.log
 ```

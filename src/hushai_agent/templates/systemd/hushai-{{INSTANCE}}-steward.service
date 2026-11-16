@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 User={{USER}}
 WorkingDirectory={{VAULT}}
 Environment=HOME={{HOME}}
@@ -15,8 +15,12 @@ Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 Environment=HUB_CAPTURE_CHILD=1
 MemoryMax=1G
-ExecStart=/usr/bin/tmux new-session -d -s hushai-{{INSTANCE}} -c {{VAULT}} "/bin/bash -lc 'while true; do {{CONFIG_ROOT}}/{{INSTANCE}}/doorkit/start-steward.sh; echo \"[hushai-steward exited $(date -Is)]\" >> {{STATE_ROOT}}/{{INSTANCE}}/steward.log 2>/dev/null || true; sleep 5; done'"
-ExecStop=/usr/bin/tmux kill-session -t hushai-{{INSTANCE}}
+# 先清掉残留会话，再起 tmux；-e 显式带环境，防止复用到已有的 tmux 服务器时丢环境变量
+ExecStartPre=-/usr/bin/tmux kill-session -t =hushai-{{INSTANCE}}
+ExecStartPre=/usr/bin/tmux new-session -d -s hushai-{{INSTANCE}} -c {{VAULT}} -e HOME={{HOME}} -e LANG=C.UTF-8 -e TZ={{TZ}} -e PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin -e HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}} -e HUSHAI_STATE_ROOT={{STATE_ROOT}} -e HUB_CAPTURE_CHILD=1 "/bin/bash -lc 'while true; do {{CONFIG_ROOT}}/{{INSTANCE}}/doorkit/start-steward.sh; echo \"[hushai-steward exited $(date -Is)]\" >> {{STATE_ROOT}}/{{INSTANCE}}/steward.log 2>/dev/null || true; sleep 5; done'"
+# 主进程只守着 tmux 会话：会话没了就退出，由 Restart=always 拉起（Type=forking 在 tmux 3.2 上会卡在 activating）
+ExecStart=/bin/sh -c 'while /usr/bin/tmux has-session -t =hushai-{{INSTANCE}} 2>/dev/null; do sleep 5; done'
+ExecStop=-/usr/bin/tmux kill-session -t =hushai-{{INSTANCE}}
 Restart=always
 RestartSec=10
 

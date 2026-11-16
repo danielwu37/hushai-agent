@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- 后续新增改动先写在此处，下个版本发布时自动归档至版本章节 -->
 
+### Added
+- `sync`：配了 `[sync] remote` 时渲染每 15 分钟的同步定时器（`templates/systemd-sync/`）。
+- `[gate] private_paths_scope`：`private_paths_file` 的规则只作用于列出的读根（相对该根匹配）；不配时保持原行为（对所有路径生效）。`local_only` 始终生效。
+- Muse 闸门按 `00-我/…` 旧路径读取时，新位置找不到会回落到 `hub/reports/legacy-00-我/收件|日报` 与 `hub/exchange/{in,out}/legacy`；`ls` 合并列出两处。
+
+### Changed
+- `weekly`：重写 `insights.md` 时，上一版里本周没有覆盖到的条目原样保留在「往期观察」一节（最多 40 条），不再整份清空。
+- 今日待办排序：今天起 2 天内到期的排在已逾期之前。
+- `capture`：收件领域取话里点名的已配置领域，没有再用第一个领域。
+- 闸门 `append-inbox` 拒收时给出具体原因（开头、段数、「产物：」「待办：」）；越界拒绝提示列出实际配置的读根。
+- `steward.service` 模板改为 `Type=simple`：`ExecStartPre` 起 tmux 会话，主进程守着会话，会话没了由 `Restart=always` 拉起（`Type=forking` 在 tmux 3.2 上会卡在 activating）。
+
+### Fixed
+- `steward`：claudeMdExcludes 排除宿主机用户级 CLAUDE.md（remote-control 不支持 `--setting-sources`）。
+- `steward`：capture-pane 目标加冒号，适配 tmux 3.2。
+
 ## [0.2.1] - 2026-11-15
 
 ### Added

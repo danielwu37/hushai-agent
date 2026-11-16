@@ -171,7 +171,8 @@ def run_capture(
                     "elapsed_seconds": round(elapsed, 1),
                 }
 
-    domain = inst_cfg.domains[0]
+    # 领域：话里点名了哪个已配置的领域就用哪个，否则用第一个领域
+    domain = next((d for d in inst_cfg.domains if d and d in snippet), inst_cfg.domains[0])
     inbox_path = add_inbox_entry(
         instance=inst_cfg.name,
         door=target_door,

@@ -129,7 +129,7 @@ hushAi-agent 是一个以本地 Markdown 为唯一记忆、由常驻服务器管
 
 ### 5.6 每周
 
-收集含基准日共 7 天的收件；将超过 `status_archive_days`（默认 28）的近况归档至 `reports/status-archive.md` 并更新索引；重写 `insights.md`（旧版归档至 `insights-archive/insights-<日期>.md`，同日重跑不覆盖已有归档，保留最近 4 份）；列出逾期、已办未销、互相矛盾、状态未核实四张清单放进周报。
+收集含基准日共 7 天的收件；将超过 `status_archive_days`（默认 28）的近况归档至 `reports/status-archive.md` 并更新索引；重写 `insights.md`（上一版里本周没覆盖的条目保留在「往期观察」，最多 40 条；旧版归档至 `insights-archive/insights-<日期>.md`，同日重跑不覆盖已有归档，保留最近 4 份）；列出逾期、已办未销、互相矛盾、状态未核实四张清单放进周报。
 
 ## 6. 适配层
 

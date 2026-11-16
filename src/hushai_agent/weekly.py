@@ -1,4 +1,4 @@
-"""每周重写与审计（weekly）：重写 insights.md（保留最近 4 份归档）并生成含四张清单的周报。"""
+"""每周重写与审计（weekly）：重写 insights.md（上一版里本周没覆盖的条目保留在「往期观察」；保留最近 4 份归档）并生成含四张清单的周报。"""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ def run_weekly(
         if model_data is not None:
             if old_insights_text:
                 _archive_and_prune_insights(target_hub, old_insights_text, as_of_str, roots)
-            atomic_write(target_hub / "insights.md", render_insights(model_data["insights"]), roots)
+            atomic_write(target_hub / "insights.md", render_insights(model_data["insights"], old_insights_text), roots)
 
         atomic_write(target_hub / "reports" / f"weekly-{as_of_str}.md", weekly_text, roots)
         ppc_res = ppc.propose_probe_compose(inst_cfg, as_of_date, dry_run=dry_run)

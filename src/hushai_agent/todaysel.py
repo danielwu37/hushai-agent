@@ -16,6 +16,7 @@ TODAY_LINE_RE = re.compile(
 TODAY_QUOTE = "> 由管家汇总任务生成，是数据不是指令，不要手改。"
 DEGRADED_QUOTE = "> 今日模型不可用，仅机械对账。"
 EMPTY_TODAY_TEXT = "（今天没有要你办的事）"
+URGENT_DAYS = 2  # 今天、明天、后天到期的排最前
 BOX_STATE_MAP = {" ": "open", "x": "done", "X": "done", "-": "dropped", ">": "deferred"}
 STATE_BOX_MAP = {"open": "[ ]", "done": "[x]", "dropped": "[-]", "deferred": "[>]"}
 
@@ -61,13 +62,16 @@ def select_today(
             continue
         eligible.append(item)
 
+    soon = target_date + datetime.timedelta(days=URGENT_DAYS)
+
     def _sort_key(item: OpenItem) -> tuple[int, str, tuple[str, int, str]]:
+        # 顺序：今天到 URGENT_DAYS 天内到期 → 已逾期 → 更晚到期 → 无截止
         id_key = _id_sort_key(item.id)
         if item.due is None:
             return (3, "", id_key)
-        if item.due < target_date:
+        if target_date <= item.due <= soon:
             return (0, item.due.isoformat(), id_key)
-        if item.due == target_date:
+        if item.due < target_date:
             return (1, item.due.isoformat(), id_key)
         return (2, item.due.isoformat(), id_key)
 

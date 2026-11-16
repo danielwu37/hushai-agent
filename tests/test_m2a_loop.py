@@ -138,7 +138,7 @@ class TestM2aLoop(unittest.TestCase):
             OpenItem("260301-1", "逾期要我定", "open", "user_decision", None, "2026-03-01", "家庭", "2026-03-01"),
         ]
         sel = todaysel.select_today(pool, "2026-03-03", limit=5)
-        self.assertEqual([i.id for i in sel], ["260301-1", "260301-4", "260301-5", "260302-1", "260302-2"])
+        self.assertEqual([i.id for i in sel], ["260301-4", "260301-1", "260301-5", "260302-1", "260302-2"])  # 近 3 天到期排在逾期前
         self.assertEqual(len(todaysel.select_today(pool, "2026-03-03", limit=2)), 2)
 
         txt = todaysel.render_today(sel, "2026-03-03", degraded="no-adapter")

@@ -43,6 +43,13 @@ LEGACY_ME_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("00-我/AGENTS.md", "hub/AGENTS.md"), ("00-我/AGENTS-附录.md", "hub/AGENTS.local.md"),
     ("00-我", "hub"),
 )
+# 2026-11-16 起旧 00-我 的收件、日报、交换区历史文件归档在 legacy 目录；按 00-我/ 旧路径找不到时回落到这里
+LEGACY_FALLBACK: tuple[tuple[str, str], ...] = (
+    ("hub/inbox", "hub/reports/legacy-00-我/收件"),
+    ("hub/reports", "hub/reports/legacy-00-我/日报"),
+    ("hub/exchange/in", "hub/exchange/in/legacy"),
+    ("hub/exchange/out", "hub/exchange/out/legacy"),
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,8 @@ class MuseGateConfig:
     enabled: bool
     read_roots: dict[str, Path]
     private_patterns: tuple[str, ...]
+    private_scope: tuple[str, ...]
+    local_patterns: tuple[str, ...]
     write_allow: tuple[str, ...]
     log_file: Path
 
@@ -84,7 +93,9 @@ def load_muse_gate_config(cfg: InstanceConfig) -> MuseGateConfig:
     if priv_file_raw:
         pf = Path(priv_file_raw)
         priv_list.extend([s for ln in pf.read_text(encoding="utf-8", errors="ignore").splitlines() if (s := ln.split("#", 1)[0].strip())] if pf.is_file() else ["/**"])
-    priv_list.extend(s for loc in cfg.local_only if (s := loc.strip().strip("/")))
+    scope_raw = parser.get("gate", "private_paths_scope", fallback="").strip()
+    private_scope = tuple(p.strip().strip("/") for p in scope_raw.split(",") if p.strip().strip("/"))
+    local_list = [s for loc in cfg.local_only if (s := loc.strip().strip("/"))]
 
     wa_raw = parser.get("gate", "write_allow", fallback="").strip()
     write_allow = tuple(p.strip() for p in wa_raw.split(",") if p.strip()) or DEFAULT_WRITE_ALLOW
@@ -94,6 +105,8 @@ def load_muse_gate_config(cfg: InstanceConfig) -> MuseGateConfig:
         enabled=bool(read_roots or priv_file_raw or wa_raw or log_raw),
         read_roots=read_roots,
         private_patterns=tuple(dict.fromkeys(priv_list)),
+        private_scope=private_scope,
+        local_patterns=tuple(dict.fromkeys(local_list)),
         write_allow=write_allow,
         log_file=log_file,
     )
@@ -115,11 +128,32 @@ def _is_private(rel_path: str, sub_path: str, mcfg: MuseGateConfig) -> bool:
     parts = [p for p in clean.split("/") if p]
     if any(p in DENY_ANY for p in parts) or (parts and any(fnmatch.fnmatch(parts[-1], n) for n in DENY_NAME)):
         return True
-    for pat in mcfg.private_patterns:
-        for cand in (clean, sub_path.strip("/")):
-            if cand and (rclone_match(pat, cand) or (pat.endswith("/**") and rclone_match(pat[:-3], cand))):
+    def _hit(pat: str, cand: str) -> bool:
+        return bool(cand) and (rclone_match(pat, cand) or (pat.endswith("/**") and rclone_match(pat[:-3], cand)))
+
+    # private_paths_file 的规则：配了 private_paths_scope 时只作用于这些读根（相对根判断），没配时对所有路径生效
+    if mcfg.private_scope:
+        scoped = [sc for sc in mcfg.private_scope if clean == sc or clean.startswith(sc + "/")]
+        if scoped:
+            rel_in_scope = clean[len(scoped[0]) :].strip("/")
+            if any(_hit(pat, rel_in_scope) for pat in mcfg.private_patterns):
                 return True
+    else:
+        for pat in mcfg.private_patterns:
+            if any(_hit(pat, cand) for cand in (clean, sub_path.strip("/"))):
+                return True
+    # local_only（vault 相对路径）始终生效
+    for pat in mcfg.local_patterns:
+        if any(_hit(pat, cand) for cand in (clean, sub_path.strip("/"))):
+            return True
     return False
+
+
+def _legacy_candidate(mapped: str) -> str | None:
+    for new_p, old_p in LEGACY_FALLBACK:
+        if mapped == new_p or mapped.startswith(new_p + "/"):
+            return old_p + mapped[len(new_p) :]
+    return None
 
 
 def _log_gate(cfg: InstanceConfig, mcfg: MuseGateConfig, raw: str, rc: int, detail: str = "") -> None:
@@ -142,7 +176,8 @@ def _match_root(mapped: str, mcfg: MuseGateConfig, cfg: InstanceConfig) -> tuple
     for prefix in sorted(mcfg.read_roots, key=len, reverse=True):
         if mapped == prefix or mapped.startswith(prefix + "/"):
             return mcfg.read_roots[prefix], mapped[len(prefix) + 1 :] if mapped != prefix else ""
-    raise PermissionError("拒绝：不在可读范围（00-我、workos、eduos、aios、23-健康、music）")
+    allowed = "、".join(["hub（旧路径 00-我）", "domains", *sorted(mcfg.read_roots)])
+    raise PermissionError(f"拒绝：不在可读范围（{allowed}）")
 
 
 def resolve_path(cfg: InstanceConfig, mcfg: MuseGateConfig, raw_rel: str, allow_missing: bool = False) -> tuple[Path, str]:
@@ -154,6 +189,10 @@ def resolve_path(cfg: InstanceConfig, mcfg: MuseGateConfig, raw_rel: str, allow_
         raise PermissionError("拒绝：路径越界")
 
     mapped = map_legacy_path(norm)
+    if norm.startswith("00-我/") and not (cfg.vault / mapped).exists():
+        cand = _legacy_candidate(mapped)
+        if cand and (cfg.vault / cand).exists():
+            mapped = cand
     root, sub_rel = _match_root(mapped, mcfg, cfg)
     if _is_private(norm, sub_rel, mcfg) or _is_private(mapped, sub_rel, mcfg):
         raise PermissionError(f"拒绝：私密或受保护路径不开放 ({norm})")
@@ -177,6 +216,24 @@ def resolve_path(cfg: InstanceConfig, mcfg: MuseGateConfig, raw_rel: str, allow_
     if target_real != root_real and root_real not in target_real.parents:
         raise PermissionError("拒绝：路径越界")
     return cur, norm
+
+
+def explain_line(ln: str) -> str:
+    """给出收件行不合格的具体原因，方便对端自行改正。"""
+    if len(ln) > LINE_MAX:
+        return f"超过 {LINE_MAX} 字"
+    if not re.match(r"^- ([01]\d|2[0-3]):[0-5]\d｜", ln):
+        return "开头须为「- HH:MM｜」（减号、空格、24 小时制时间、全角竖线）"
+    parts = ln[2:].split("｜")
+    if len(parts) != 5:
+        return f"须恰好 5 段、用全角竖线｜分隔，现在是 {len(parts)} 段"
+    if not parts[3].startswith("产物："):
+        return "第 4 段须以「产物：」开头（全角冒号），没有写「产物：无」"
+    if not parts[4].startswith("待办："):
+        return "第 5 段须以「待办：」开头（全角冒号），没有写「待办：无」"
+    if not parts[1].strip() or not parts[2].strip() or not parts[3][3:].strip() or not parts[4][3:].strip():
+        return "有空段"
+    return "含换行或其他非法字符"
 
 
 def is_muse_ssh_invocation(cfg: InstanceConfig, raw_cmd: str) -> bool:
@@ -212,7 +269,14 @@ def run_muse_ssh(cfg: InstanceConfig, door: str, raw_cmd: str, stdin_stream: Any
             if not p.is_dir():
                 raise PermissionError("拒绝：不是目录")
             lines: list[str] = []
-            for entry in sorted(p.iterdir(), key=lambda e: e.name):
+            entries = {e.name: e for e in p.iterdir()}
+            if norm.startswith("00-我"):
+                cand = _legacy_candidate(map_legacy_path(norm))
+                legacy_dir = cfg.vault / cand if cand else None
+                if legacy_dir is not None and legacy_dir.is_dir() and not legacy_dir.is_symlink():
+                    for e in legacy_dir.iterdir():
+                        entries.setdefault(e.name, e)
+            for entry in sorted(entries.values(), key=lambda e: e.name):
                 if entry.name.startswith(".") or entry.is_symlink():
                     continue
                 try:
@@ -241,7 +305,7 @@ def run_muse_ssh(cfg: InstanceConfig, door: str, raw_cmd: str, stdin_stream: Any
                 raise PermissionError("拒绝：没有内容")
             for i, ln in enumerate(lines, 1):
                 if len(ln) > LINE_MAX or not LINE_RE.match(ln):
-                    raise PermissionError(f"拒绝：第 {i} 行不符合收件五段式：{ln[:80]}")
+                    raise PermissionError(f"拒绝：第 {i} 行不符合收件五段式（{explain_line(ln)}）：{ln[:200]}")
                 try:
                     parse_inbox_line(ln, allowed_domains=cfg.allowed_domains)
                 except InboxFormatError as exc:
