@@ -16,9 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `sync`：配了 `[sync] remote` 时渲染每 15 分钟的同步定时器（`templates/systemd-sync/`）。
 - `[gate] private_paths_scope`：`private_paths_file` 的规则只作用于列出的读根（相对该根匹配）；不配时保持原行为（对所有路径生效）。`local_only` 始终生效。
 
-### Fixed
-- **复审补漏（2026-11-16）**：`digest` 默认日期改为「到 `digest_time` 才把今日待办翻到明天」，凌晨或白天手动跑都写当天；`weekly --scheduled`（定时器用）基准日取预定周日，晚到的补跑若本期已出则跳过；Claude 端 `Write`/`Edit` 拦截规则改用 `//绝对路径/**` 写法；隔离领域（`local_only_domains`）里带待办的行由 [`local_items.py`](src/hushai_agent/local_items.py) 直接落成开放项，不再被静默消化；`capture` 对管家维护类对话只记账本（`[capture] system_markers` 可改）；`brain disable all` 清理配置目录里的 second-brain 单元并提示系统目录残留。
-
 ### Changed
 - **定时调度与事件防雪崩**：[`install.py`](src/hushai_agent/install.py) 模板将 `heal.timer` 错峰至 `*:50:00`、`sync.timer` 改为 `*:00,15,45:00` 并加 `RandomizedDelaySec=30` 与 `TimeoutStartSec=15min`、全部 `.service` 显式注入 `Environment=TZ={{TZ}}`；`sync.py` 与 `on_event.py` 增加 `budget_seconds` 预算与 `sync pull --update` / 服务端写入端排除；`lock.py` 新增 `model.lock` 串行化 `runner` 与 `dispatch` 的外部模型调用。
 - **Muse 闸门通用化与安全写盘**：将个人历史映射（`legacy_prefix_map` / `legacy_fallback`）、`txt_only_dirs` 与 `deny_names` 解耦至 `[gate]` 配置；`put` 禁止回落 `legacy` 目录且改用 `-1`/`-2` 防覆盖分配；`append-inbox` 触发即时机械对账并用日志/账本记录异常。
@@ -31,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `steward.service` 模板改为 `Type=simple`：`ExecStartPre` 起 tmux 会话，主进程守着会话，会话没了由 `Restart=always` 拉起（`Type=forking` 在 tmux 3.2 上会卡在 activating）。
 
 ### Fixed
+- **复审补漏（2026-11-16）**：`digest` 默认日期改为「到 `digest_time` 才把今日待办翻到明天」，凌晨或白天手动跑都写当天；`weekly --scheduled`（定时器用）基准日取预定周日，晚到的补跑若本期已出则跳过；Claude 端 `Write`/`Edit` 拦截规则改用 `//绝对路径/**` 写法；隔离领域（`local_only_domains`）里带待办的行由 [`local_items.py`](src/hushai_agent/local_items.py) 直接落成开放项，不再被静默消化；`capture` 对管家维护类对话只记账本（`[capture] system_markers` 可改）；`brain disable all` 清理配置目录里的 second-brain 单元并提示系统目录残留。
 - **修复跨午夜补跑与跨周误重跑 (`digest` / `weekly` / `heal`)**：凌晨 6 点前昨日未出 `digest` 自动回指昨日（目标为今日）；`heal_checks` 按 `digest_time` 计算补跑日，同 ISO 周内已跑过周报不再在次周初误触发补跑；修复 `hushai config` 菜单 8 手动跑 `digest`/`weekly` 缺少 `as_of` 参数报错。
 - **修复同步冲突文件名误判**：收紧 `validate_basic.SYNC_CONFLICT_RE`（兼容半全角 `(冲突)`/`（冲突）` 与 `_冲突版`），避免 `记忆冲突裁决规则.md` 等正常标题被误报 `WARN`。
 - `steward`：claudeMdExcludes 排除宿主机用户级 CLAUDE.md（remote-control 不支持 `--setting-sources`）。
