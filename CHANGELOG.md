@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - `sync`：配了 `[sync] remote` 时渲染每 15 分钟的同步定时器（`templates/systemd-sync/`）。
 - `[gate] private_paths_scope`：`private_paths_file` 的规则只作用于列出的读根（相对该根匹配）；不配时保持原行为（对所有路径生效）。`local_only` 始终生效。
+- 闸门把旧路径 `00-我/日报/最新.md` 映射到 `hub/reports/morning-brief.md`。
 - 闸门 `put` 到 `music/Playlists/_输入清单/待下载/` 只收该目录下的 `.txt` 清单。
 - Muse 闸门按 `00-我/…` 旧路径读取时，新位置找不到会回落到 `hub/reports/legacy-00-我/收件|日报` 与 `hub/exchange/{in,out}/legacy`；`ls` 合并列出两处。
 

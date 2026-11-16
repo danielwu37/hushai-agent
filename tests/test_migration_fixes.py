@@ -152,6 +152,10 @@ class TestMuseGateMigration(unittest.TestCase):
         self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/a.sh", b"x\n")[1], 2)
         self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/sub/a.txt", b"x\n")[1], 2)
 
+    def test_latest_daily_maps_to_morning_brief(self) -> None:
+        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/最新.md"), "hub/reports/morning-brief.md")
+        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/2026-11.md"), "hub/reports/2026-11.md")
+
     def test_explain_segments(self) -> None:
         self.assertIn("4 段", gate_muse.explain_line("- 09:00｜工作｜事｜待办：无"))
 

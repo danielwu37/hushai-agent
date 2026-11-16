@@ -33,6 +33,7 @@ TEXT_EXT = (".md", ".txt", ".csv", ".tsv", ".json", ".html", ".yaml", ".yml")
 DEFAULT_WRITE_ALLOW = ("00-我/交换/入/", "hub/exchange/in/", "music/Playlists/_输入清单/待下载/")
 
 LEGACY_ME_PREFIX_MAP: tuple[tuple[str, str], ...] = (
+    ("00-我/日报/最新.md", "hub/reports/morning-brief.md"),  # 旧「最新日报」改指新晨间简报，免得读到停更前的旧日报
     ("00-我/收件", "hub/inbox"), ("00-我/日报", "hub/reports"),
     ("00-我/交换/入", "hub/exchange/in"), ("00-我/交换/出", "hub/exchange/out"), ("00-我/交换", "hub/exchange"),
     ("00-我/今日待办.md", "hub/today.md"), ("00-我/开放项.md", "hub/open-items.md"),
