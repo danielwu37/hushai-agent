@@ -18,6 +18,9 @@ DENY_RULES = [
     "Bash(rm -rf ~*)",
     "Bash(rm -rf .*)",
     "Bash(rm -rf hub*)",
+    "Bash(rm -r *)",
+    "Bash(rm -fr *)",
+    "Bash(find * -delete*)",
     "Bash(git push --force*)",
     "Bash(git reset --hard*)",
     "Bash(mkfs*)",
@@ -27,6 +30,8 @@ DENY_RULES = [
     "Bash(reboot*)",
     "Bash(systemctl stop*)",
     "Bash(systemctl disable*)",
+    "Bash(mail*)",
+    "Bash(sendmail*)",
     "Write(/etc/*)",
     "Write(/root/.ssh/*)",
     "Write(/root/.config/*)",
@@ -39,18 +44,25 @@ DENY_RULES = [
 
 ASK_RULES = [
     "Bash(git push*)",
+    "Bash(git rm*)",
     "Bash(rm *)",
     "Bash(curl *)",
     "Bash(wget *)",
     "Bash(scp *)",
     "Bash(rsync *)",
+    "Bash(rclone *)",
+    "Bash(ssh *)",
     "Bash(systemctl *)",
+    "WebFetch",
 ]
 
 AGY_DENY_RULES = [
     "command(rm -rf /*)",
     "command(rm -rf ~*)",
     "command(rm -rf hub*)",
+    "command(rm -r *)",
+    "command(rm -fr *)",
+    "command(find * -delete*)",
     "command(git push --force*)",
     "command(git reset --hard*)",
     "command(mkfs*)",
@@ -60,6 +72,8 @@ AGY_DENY_RULES = [
     "command(reboot*)",
     "command(systemctl stop*)",
     "command(systemctl disable*)",
+    "command(mail*)",
+    "command(sendmail*)",
     "write_file(/etc/*)",
     "write_file(/root/.ssh/*)",
     "write_file(/root/.config/*)",
@@ -68,11 +82,14 @@ AGY_DENY_RULES = [
 
 AGY_ASK_RULES = [
     "command(git push*)",
+    "command(git rm*)",
     "command(rm *)",
     "command(curl *)",
     "command(wget *)",
     "command(scp *)",
     "command(rsync *)",
+    "command(rclone *)",
+    "command(ssh *)",
     "command(systemctl *)",
 ]
 

@@ -48,6 +48,7 @@ from hushai_agent import (  # noqa: E402
     sync,
     validate,
 )
+from hushai_agent.cli_config import MenuIO, run_config_menu  # noqa: E402
 from hushai_agent.config import load_instance_config  # noqa: E402
 from hushai_agent.config_edit import apply_config_updates  # noqa: E402
 from hushai_agent.paths import get_instance_config_file  # noqa: E402
@@ -187,11 +188,32 @@ class TestAuditFixes(unittest.TestCase):
         claude_s = json.loads((kit / "claude-settings.json").read_text(encoding="utf-8"))
         agy_s = json.loads((kit / "agy-settings.json").read_text(encoding="utf-8"))
         self.assertIn("Bash(rm -rf /*)", claude_s["permissions"]["deny"])
+        self.assertIn("Bash(find * -delete*)", claude_s["permissions"]["deny"])
         self.assertIn("Bash(systemctl stop*)", claude_s["permissions"]["deny"])
         self.assertIn("Bash(curl *)", claude_s["permissions"]["ask"])
+        self.assertIn("Bash(rclone *)", claude_s["permissions"]["ask"])
+        self.assertIn("WebFetch", claude_s["permissions"]["ask"])
         self.assertIn("command(rm -rf /*)", agy_s["permissions"]["deny"])
+        self.assertIn("command(find * -delete*)", agy_s["permissions"]["deny"])
         self.assertIn("write_file(/etc/*)", agy_s["permissions"]["deny"])
         self.assertIn("command(curl *)", agy_s["permissions"]["ask"])
+        self.assertIn("command(rclone *)", agy_s["permissions"]["ask"])
+
+    def test_h3_menu8_maintenance_smoke(self) -> None:
+        """H-3：hushai config 菜单 8 手动触发 reconcile / digest / weekly / heal / doctor 不报 TypeError。"""
+        add_inbox_entry("demo", "steward", "工作", "菜单 8 冒烟验证记录")
+        out_lines: list[str] = []
+        seq = iter(["8", "1", "2", "y", "3", "y", "4", "5", "0", "0"])
+        rc = run_config_menu(
+            instance="demo",
+            io=MenuIO(read_line=lambda p: (out_lines.append(p) or next(seq)), write=out_lines.append),
+        )
+        self.assertEqual(rc, 0)
+        joined = "\n".join(out_lines)
+        self.assertNotIn("✗ 操作失败", joined)
+        self.assertIn("✓ 机械对账完成", joined)
+        self.assertIn("✓ 每日汇总完成", joined)
+        self.assertIn("✓ 每周回顾完成", joined)
 
     def test_h4_and_21_alerts_brief_capture_and_doctor(self) -> None:
         """H-4 & 2.1：alerts.jsonl 写入、brief 渲染系统通知、capture ASCII 边界、doctor 检出过期收件与未处理告警。"""
