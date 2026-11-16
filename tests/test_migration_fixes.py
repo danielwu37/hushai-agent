@@ -139,6 +139,19 @@ class TestMuseGateMigration(unittest.TestCase):
         out, rc = self._ssh("append-inbox 2026-03-02 auto", "18:49｜工作｜事情｜产物：无｜待办：无\n".encode("utf-8"))
         self.assertIn("- HH:MM｜", out["error"])
 
+    def test_music_download_only_txt(self) -> None:
+        music = self.base / "od" / "music"
+        (music / "Playlists" / "_输入清单" / "待下载").mkdir(parents=True)
+        cfg_file = self.base / "config" / "demo" / "config.ini"
+        txt = cfg_file.read_text(encoding="utf-8").replace(
+            f"30-家庭/eduos={self.eduos}", f"30-家庭/eduos={self.eduos}, music={music}"
+        ) + "write_allow = hub/exchange/in/, music/Playlists/_输入清单/待下载/\n"
+        cfg_file.write_text(txt, encoding="utf-8")
+        self.cfg = load_instance_config("demo")
+        self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/a.txt", b"song\n")[1], 0)
+        self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/a.sh", b"x\n")[1], 2)
+        self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/sub/a.txt", b"x\n")[1], 2)
+
     def test_explain_segments(self) -> None:
         self.assertIn("4 段", gate_muse.explain_line("- 09:00｜工作｜事｜待办：无"))
 

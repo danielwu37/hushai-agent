@@ -333,6 +333,8 @@ def run_muse_ssh(cfg: InstanceConfig, door: str, raw_cmd: str, stdin_stream: Any
             p, norm = resolve_path(cfg, mcfg, args[0], allow_missing=True)
             if norm.startswith(("00-我/交换/入/", "hub/exchange/in/")) and not fname.endswith(TEXT_EXT):
                 raise PermissionError("拒绝：交换/入 只收文本类文件")
+            if norm.startswith("music/Playlists/_输入清单/待下载/") and ("/" in norm[len("music/Playlists/_输入清单/待下载/") :] or not fname.endswith(".txt")):
+                raise PermissionError("拒绝：音乐待下载只收该目录下的 .txt 清单")
             data = stdin_stream.read(PUT_MAX + 1)
             if not data or len(data) > PUT_MAX:
                 raise PermissionError("拒绝：没有内容或超过 5 MB 上限")
