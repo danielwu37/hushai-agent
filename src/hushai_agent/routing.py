@@ -9,11 +9,12 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 from hushai_agent import checkpoint, clock, ledger, lock, runner
-from hushai_agent.config import InstanceConfig
+from hushai_agent.config import InstanceConfig, is_local_only_domain
 from hushai_agent.config_ext import ExtConfig
 from hushai_agent.fsio import append_line, read_for_prompt
 from hushai_agent.guard import GuardError
@@ -93,6 +94,8 @@ def _pending(cfg: InstanceConfig, ext: ExtConfig, last: dict[str, dict[str, Any]
     for rec in iter_inbox_lines(cfg.vault / "hub" / "inbox"):
         if rec.auto or rec.door not in ext.trusted_doors:
             continue
+        if is_local_only_domain(rec.domain, cfg):
+            continue
         if not (start.isoformat() <= str(rec.date) <= today.isoformat()):
             continue
         mention = parse_mention(rec.todo)
@@ -133,7 +136,11 @@ def _deliver(cfg: InstanceConfig, rec: InboxRecord, target: str, request: str, a
     return rel
 
 
-def _run_routing_locked(cfg: InstanceConfig, ext: ExtConfig) -> dict[str, Any]:
+def _run_routing_locked(
+    cfg: InstanceConfig,
+    ext: ExtConfig,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     state_dir = get_instance_state_dir(cfg.name)
     checkpoint.recover_pending_routes(cfg)
     today = clock.today(cfg)
@@ -142,6 +149,11 @@ def _run_routing_locked(cfg: InstanceConfig, ext: ExtConfig) -> dict[str, Any]:
     out: dict[str, Any] = {"routed": 0, "failed": 0, "left": 0, "replies": []}
     todo = _pending(cfg, ext, last)
     for idx, (rec, target, request) in enumerate(todo):
+        if deadline is not None and time.monotonic() >= deadline:
+            lock.mark_dirty(cfg, "routing")
+            out["left"] = len(todo) - idx
+            out["stopped"] = "budget-timeout"
+            break
         if used >= ext.routing_max_daily:
             out["left"] = len(todo) - idx
             out["stopped"] = "max-daily"
@@ -177,13 +189,18 @@ def _run_routing_locked(cfg: InstanceConfig, ext: ExtConfig) -> dict[str, Any]:
     return out
 
 
-def run(cfg: InstanceConfig, ext: ExtConfig) -> dict[str, Any]:
+def run(
+    cfg: InstanceConfig,
+    ext: ExtConfig,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     """处理所有待路由的行，返回摘要；锁忙时标记 dirty 并在持锁者释放后补跑。"""
     ctx = lock.acquire_or_mark_dirty(cfg, "routing", "route.lock")
     if ctx is None:
         return {"skipped": "lock-busy", "dirty_marked": True}
     try:
-        return _run_routing_locked(cfg, ext)
+        return _run_routing_locked(cfg, ext, deadline=deadline)
     finally:
         ctx.__exit__(None, None, None)
-        lock.drain_after_unlock(cfg, "routing", "route.lock", lambda: _run_routing_locked(cfg, ext))
+        if deadline is None or time.monotonic() < deadline:
+            lock.drain_after_unlock(cfg, "routing", "route.lock", lambda: _run_routing_locked(cfg, ext, deadline=deadline))

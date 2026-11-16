@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from hushai_agent import adapters, clock, ledger
+from hushai_agent import adapters, clock, ledger, lock
 from hushai_agent.adapters.base import Result
 from hushai_agent.config import DEFAULT_TIMEZONE, InstanceConfig, parse_fallback_chain
 from hushai_agent.paths import get_instance_state_dir
@@ -94,6 +94,31 @@ def run_model(
     call_meta = dict(meta or {})
     call_meta.setdefault("job", job)
 
+    try:
+        with lock.model_lock(cfg):
+            return _run_model_chain_locked(cfg, job, prompt, schema, call_meta, validate, timeout, chain, text_mode)
+    except lock.LockBusy as exc:
+        return None, {
+            "degraded": "lock-busy",
+            "errors": [str(exc)],
+            "adapter": "",
+            "tier": "",
+            "model": "",
+            "calls": 0,
+        }
+
+
+def _run_model_chain_locked(
+    cfg: InstanceConfig,
+    job: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    call_meta: dict[str, Any],
+    validate: ValidateFn,
+    timeout: int | None,
+    chain: list[tuple[str, str]],
+    text_mode: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     errors: list[str] = []
     calls_made = 0
     last_adapter = ""

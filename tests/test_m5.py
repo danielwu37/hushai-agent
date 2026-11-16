@@ -19,7 +19,7 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from hushai_agent import gate, heal, items, steward  # noqa: E402
+from hushai_agent import alerts, doorkit, gate, heal, items, steward  # noqa: E402
 from hushai_agent.config import load_instance_config  # noqa: E402
 from hushai_agent.validate import validate_vault  # noqa: E402
 from hushai_agent.vault import init_instance  # noqa: E402
@@ -93,13 +93,14 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         agy_settings_path = script_path.parent / "agy-settings.json"
         self.assertTrue(agy_settings_path.is_file())
         agy_settings = json.loads(agy_settings_path.read_text(encoding="utf-8"))
-        self.assertEqual(agy_settings, {"trustedWorkspaces": [str(self.vault)]})
+        self.assertEqual(agy_settings["trustedWorkspaces"], [str(self.vault)])
+        self.assertTrue(set(doorkit.AGY_DENY_RULES).issubset(set(agy_settings["permissions"]["deny"])))
+        self.assertTrue(set(doorkit.AGY_ASK_RULES).issubset(set(agy_settings["permissions"]["ask"])))
         self.assertNotIn("hooks", agy_settings)
 
-        inbox_file = self.vault / "hub" / "inbox" / "2026-03-02-steward.md"
-        self.assertTrue(inbox_file.is_file())
-        inbox_txt = inbox_file.read_text(encoding="utf-8")
-        self.assertIn("切前 agy，切后 claude", inbox_txt)
+        self.assertFalse((self.vault / "hub" / "inbox" / "2026-03-02-steward.md").exists())
+        recent_sw = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertTrue(any("切前 agy，切后 claude" in a.get("message", "") for a in recent_sw))
         self.assertTrue(validate_vault(self.vault)["ok"])
 
     def test_02_heal_steward_online_restarts_dead_tmux(self) -> None:
@@ -124,11 +125,12 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         chk = {c["id"]: c for c in res["checks"]}["steward_online"]
         self.assertEqual(chk["status"], "healed")
         self.assertTrue(state["alive"])
-        heal_inbox = (self.vault / "hub" / "inbox" / "2026-03-02-heal.md").read_text(encoding="utf-8")
-        self.assertIn("管家离线", heal_inbox)
+        self.assertFalse((self.vault / "hub" / "inbox" / "2026-03-02-heal.md").exists())
+        recent = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertTrue(any("管家离线" in a.get("message", "") for a in recent))
 
     def test_03_heal_steward_quota_exhausted_switches_to_agy(self) -> None:
-        """3. backend=claude 且日志出现真实额度耗尽特征时，heal 自动切到 agy 并写 today.md 顶部提示。"""
+        """3. backend=claude 且日志出现真实额度耗尽特征时，heal 自动切到 agy 并写入 alerts.jsonl（不污染 today.md）。"""
         steward.set_backend(self.cfg(), "claude")
         log_file = self.state_dir / "steward.log"
         log_file.write_text(
@@ -150,10 +152,10 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         self.assertEqual(steward.get_backend(self.cfg()), "agy")
 
         today_txt = (self.vault / "hub" / "today.md").read_text(encoding="utf-8")
-        self.assertIn(steward.TODAY_SWITCH_ALERT, today_txt)
-        steward_inbox = (self.vault / "hub" / "inbox" / "2026-03-02-steward.md").read_text(encoding="utf-8")
-        self.assertIn("Claude 额度用尽自动接手", steward_inbox)
-        self.assertIn("切前 claude，切后 agy", steward_inbox)
+        self.assertNotIn("- 系统：", today_txt)
+        recent = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertTrue(any("Claude 额度用尽自动接手" in a.get("message", "") and "切前 claude，切后 agy" in a.get("message", "") and a.get("kind") == "steward_switch" for a in recent))
+        self.assertFalse((self.vault / "hub" / "inbox" / "2026-03-02-steward.md").exists())
         self.assertTrue(validate_vault(self.vault)["ok"])
 
     def test_04_muse_gate_commands_and_security(self) -> None:
@@ -179,6 +181,10 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
             f"read_roots = workos={workos}, music={music}\n"
             f"private_paths_file = {priv_file}\n"
             "write_allow = 00-我/交换/入/, hub/exchange/in/, music/Playlists/_输入清单/待下载/\n"
+            "legacy_prefix_map = 00-我=hub,00-我/今日待办.md=hub/today.md,00-我/近况-索引.md=hub/status-index.md,00-我/近况.md=hub/status.md,00-我/交换/入/=hub/exchange/in/\n"
+            "legacy_fallback = 00-我/收件=hub/reports/legacy-00-我/收件\n"
+            "txt_only_dirs = music/Playlists/_输入清单/待下载/\n"
+            "deny_names = spotify_config.json\n"
             f"log_file = {log_file}\n"
         )
         self.cfg_file.write_text(self.cfg_file.read_text(encoding="utf-8") + gate_cfg, encoding="utf-8")

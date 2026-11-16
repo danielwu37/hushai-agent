@@ -38,6 +38,7 @@
 | 记录层 | `hub/inbox/YYYY-MM-DD-<door>[-auto].md` | 对应编号的端 | 只追加（append-only），严禁改删历史行 |
 | 派生层 | `status.md`、`status-index.md`、`open-items.md`、`today.md`、`insights.md`、`reports/` | 仅管家（`steward`）汇总任务 | 由记录层对账重算并原子覆写，不要手改 |
 | 领域层 | `domains/<name>/**` | 获授权的工作端 | 遵循对应 `domains/<name>/AGENTS.md` |
+| 系统告警 | `<state>/alerts.jsonl`（由 `brief`/`doctor` 只读展示） | `heal` / `steward` / `outbox` | 系统运维事件与故障告警绝不写入 `hub/inbox/` 或 `hub/today.md` |
 
 ## 5. 安全与隐私红线
 

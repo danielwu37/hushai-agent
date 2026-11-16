@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from hushai_agent import clock, ledger
+from hushai_agent import alerts, clock, ledger
 from hushai_agent.config import InstanceConfig, load_instance_config
-from hushai_agent.fsio import append_line_with_header, atomic_write
+from hushai_agent.fsio import atomic_write
 from hushai_agent.heal_checks import (
     _default_cmd_runner,
     _parse_iso,
@@ -23,10 +23,8 @@ from hushai_agent.heal_checks import (
     check_vault_rw,
     check_watch_alive,
 )
-from hushai_agent.inboxfmt import format_inbox_line
 from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.steward import check_steward_online
-from hushai_agent.todaysel import DEGRADED_QUOTE, TODAY_HEADER_RE, TODAY_QUOTE
 
 ALERT_COOLDOWN_SECONDS = 24 * 3600
 ALLOWED_UNIT_OPS = frozenset({"start", "restart", "reset-failed"})
@@ -83,68 +81,37 @@ def operate_systemd_unit(
     return False, f"systemctl {op} {unit_name} 失败 (rc={rc}): {out[:100]}"
 
 
-def _write_heal_inbox(cfg: InstanceConfig, item: dict[str, Any]) -> str:
-    """已自愈时向 hub/inbox/<日期>-heal.md 追加一行：自愈：X，动作 Y，结果 Z。"""
-    now_dt = clock.now(cfg)
-    date_str = now_dt.strftime("%Y-%m-%d")
-    time_str = now_dt.strftime("%H:%M")
-    domain = "AI" if "AI" in cfg.domains else cfg.domains[0]
-    did = f"自愈：{item.get('problem', item['name'])}，动作 {item.get('action', '-')}，结果 {item.get('result', '已恢复')}"
-    line = format_inbox_line(
-        time_str=time_str,
-        domain=domain,
-        did=did,
-        lang=cfg.lang,
-        allowed_domains=cfg.allowed_domains,
+def _write_heal_alert(cfg: InstanceConfig, item: dict[str, Any]) -> str:
+    """已自愈时记入 <state>/alerts.jsonl，不污染 hub/inbox/。"""
+    msg = f"自愈：{item.get('problem', item['name'])}，动作 {item.get('action', '-')}，结果 {item.get('result', '已恢复')}"
+    alerts.record_alert(
+        cfg,
+        kind="heal",
+        level="info",
+        message=msg,
+        source=f"heal:{item.get('id', item['name'])}",
     )
-    inbox_file = cfg.vault / "hub" / "inbox" / f"{date_str}-heal.md"
-    header = f"# {date_str} heal"
-    append_line_with_header(inbox_file, header, line, [cfg.vault])
-    return str(inbox_file)
-
-
-def _prepend_today_alert(cfg: InstanceConfig, alert_line: str) -> None:
-    """在 hub/today.md 顶部（表头引用之后、待办列表之前）插入一条系统告警。"""
-    today_file = cfg.vault / "hub" / "today.md"
-    today_str = clock.today(cfg).isoformat()
-    if not today_file.is_file():
-        content = f"# 今日待办 {today_str}\n{TODAY_QUOTE}\n{alert_line}\n"
-        atomic_write(today_file, content, [cfg.vault])
-        return
-
-    lines = today_file.read_text(encoding="utf-8").splitlines()
-    if alert_line in [ln.strip() for ln in lines]:
-        return
-
-    insert_idx = 0
-    for idx, raw in enumerate(lines):
-        s = raw.strip()
-        if TODAY_HEADER_RE.match(s) or s in (TODAY_QUOTE, DEGRADED_QUOTE) or s.startswith(">"):
-            insert_idx = idx + 1
-        else:
-            break
-    new_lines = lines[:insert_idx] + [alert_line] + lines[insert_idx:]
-    atomic_write(today_file, "\n".join(new_lines) + "\n", [cfg.vault])
+    return str(alerts.alerts_path(cfg))
 
 
 def _report_needs_human(cfg: InstanceConfig, item: dict[str, Any]) -> str | None:
-    """修 2 次仍失败或不在白名单：在 today.md 顶上加一条「系统：X 坏了，建议 Y」，同一问题 24 小时内只写一次。"""
+    """修 2 次仍失败或不在白名单：经 outbox 记录系统告警到 <state>/alerts.jsonl（24h 内同问题只发一次）。"""
     state_dir = get_instance_state_dir(cfg.name)
     alerts_file = state_dir / "heal-alerts.json"
     now_dt = clock.now(cfg)
     tz = ZoneInfo(cfg.timezone)
 
-    alerts: dict[str, str] = {}
+    cooldown_map: dict[str, str] = {}
     if alerts_file.is_file():
         try:
             loaded = json.loads(alerts_file.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
-                alerts = {str(k): str(v) for k, v in loaded.items()}
+                cooldown_map = {str(k): str(v) for k, v in loaded.items()}
         except (OSError, json.JSONDecodeError):
-            pass
+            cooldown_map = {}
 
     key = f"{item['id']}:{item.get('problem', '')}"
-    prev_dt = _parse_iso(alerts.get(key), tz)
+    prev_dt = _parse_iso(cooldown_map.get(key), tz)
     if prev_dt is not None and 0 <= (now_dt - prev_dt).total_seconds() < ALERT_COOLDOWN_SECONDS:
         return None
 
@@ -158,7 +125,13 @@ def _report_needs_human(cfg: InstanceConfig, item: dict[str, Any]) -> str | None
         cfg,
         channel="today_alert",
         target=cfg.steward_door,
-        payload={"alert_line": alert_line, "problem_key": key},
+        payload={
+            "alert_line": alert_line,
+            "problem_key": key,
+            "kind": "heal_needs_human",
+            "level": "needs_human",
+            "suggestion": y_part,
+        },
         dedupe_key=f"heal-alert:{key}",
         cooldown_seconds=ALERT_COOLDOWN_SECONDS,
     )
@@ -168,8 +141,8 @@ def _report_needs_human(cfg: InstanceConfig, item: dict[str, Any]) -> str | None
     if int(flush_res.get("sent") or 0) <= 0:
         return None
 
-    alerts[key] = now_dt.isoformat()
-    atomic_write(alerts_file, json.dumps(alerts, ensure_ascii=False, indent=2) + "\n", [state_dir])
+    cooldown_map[key] = now_dt.isoformat()
+    atomic_write(alerts_file, json.dumps(cooldown_map, ensure_ascii=False, indent=2) + "\n", [state_dir])
     return alert_line
 
 
@@ -213,8 +186,10 @@ def _recover_abandoned_state(inst_cfg: InstanceConfig) -> dict[str, int]:
                     from hushai_agent.reconcile import _run_mechanical_locked
 
                     _run_mechanical_locked(inst_cfg)
-        except (lock.LockBusy, Exception):
+        except lock.LockBusy:
             pass
+        except Exception as exc:
+            ledger.record(inst_cfg, "job", job="heal-recover-mech", date=clock.today(inst_cfg).isoformat(), result="failed", note=str(exc)[:200])
 
         ext = load_ext(inst_cfg)
         try:
@@ -226,16 +201,20 @@ def _recover_abandoned_state(inst_cfg: InstanceConfig) -> dict[str, int]:
                     from hushai_agent.routing import _run_routing_locked
 
                     _run_routing_locked(inst_cfg, ext)
-        except (lock.LockBusy, Exception):
+        except lock.LockBusy:
             pass
+        except Exception as exc:
+            ledger.record(inst_cfg, "job", job="heal-recover-route", date=clock.today(inst_cfg).isoformat(), result="failed", note=str(exc)[:200])
 
     if outbox.has_pending_or_sending(inst_cfg):
         try:
             ob_res = outbox.flush(inst_cfg)
             summary["outbox_sent"] = int(ob_res.get("sent") or 0)
             summary["outbox_recovered"] = int(ob_res.get("recovered") or 0)
-        except (lock.LockBusy, Exception):
+        except lock.LockBusy:
             pass
+        except Exception as exc:
+            ledger.record(inst_cfg, "job", job="heal-recover-outbox", date=clock.today(inst_cfg).isoformat(), result="failed", note=str(exc)[:200])
     return summary
 
 
@@ -248,7 +227,7 @@ def _run_heal_locked(
 
     env_hooks = dict(hooks or {})
     results: list[dict[str, Any]] = []
-    healed_files: list[str] = []
+    healed_alert_files: list[str] = []
     alerts_written: list[str] = []
 
     for check_id, check_name, check_fn in CHECKS:
@@ -273,7 +252,7 @@ def _run_heal_locked(
         results.append(entry)
 
         if entry["status"] == "healed" and not dry_run:
-            healed_files.append(_write_heal_inbox(inst_cfg, entry))
+            healed_alert_files.append(_write_heal_alert(inst_cfg, entry))
         elif entry["status"] == "failed" and not dry_run:
             alert_txt = _report_needs_human(inst_cfg, entry)
             if alert_txt:
@@ -312,6 +291,7 @@ def _run_heal_locked(
         "before": before,
         "dry_run": dry_run,
         "checks": results,
-        "healed_inbox_files": healed_files,
+        "healed_inbox_files": [],
+        "healed_alert_files": healed_alert_files,
         "alerts_written": alerts_written,
     }

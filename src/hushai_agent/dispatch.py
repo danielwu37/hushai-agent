@@ -219,53 +219,53 @@ def run_dispatch(
     atomic_write(job_dir / "task.md", task_text, [state_dir])
     work_dir = validated_workdir or ensure_dir(job_dir / "work", [state_dir])
 
-    today_str = clock.today(inst_cfg).isoformat()
-    if ledger.calls_today(inst_cfg) >= inst_cfg.max_daily_calls:
-        err_msg = "超出每日调用预算（max_daily_calls 已用尽）"
-        ledger.record(
-            inst_cfg, "job", job="dispatch", date=today_str, dry_run=False,
-            result="failed", note=f"name={name}; reason=budget",
-        )
+    def _abort_res(err_msg: str, note: str, model: str = "", conv_id: str = "", dur: float = 0.0) -> dict[str, Any]:
+        ledger.record(inst_cfg, "job", job="dispatch", date=today_str, dry_run=False, result="failed", note=note)
         return {
-            "ok": False, "name": name, "adapter": chosen_adapter, "tier": tier,
-            "model": "", "duration": 0.0, "resumed": False, "conversation_id": "",
-            "job_dir": str(job_dir), "workdir": str(work_dir),
-            "files": _list_workdir_files(work_dir), "report_tail": "", "error": err_msg,
+            "ok": False, "name": name, "adapter": chosen_adapter, "tier": tier, "model": model,
+            "duration": dur, "resumed": False, "conversation_id": conv_id, "job_dir": str(job_dir),
+            "workdir": str(work_dir), "files": _list_workdir_files(work_dir),
+            "report_tail": "", "error": err_msg,
         }
 
-    res1, dur1 = _invoke_and_record(
-        inst_cfg, adapter, chosen_adapter, task_text, tier, work_dir, timeout, resume_id=None,
-    )
-    resumed = False
-    final_res = res1
-    total_duration = dur1
+    today_str = clock.today(inst_cfg).isoformat()
+    if ledger.calls_today(inst_cfg) >= inst_cfg.max_daily_calls:
+        return _abort_res("超出每日调用预算（max_daily_calls 已用尽）", f"name={name}; reason=budget")
 
-    if res1.interrupted and res1.conversation_id:
-        _save_raw_output(job_dir / "out.pre.json", res1, state_dir)
-        if ledger.calls_today(inst_cfg) >= inst_cfg.max_daily_calls:
-            err_msg = "中断后准备续跑时每日调用预算已用尽"
-            ledger.record(
-                inst_cfg, "job", job="dispatch", date=today_str, dry_run=False,
-                result="failed", note=f"name={name}; resumed=False; reason=budget-on-resume",
-            )
-            return {
-                "ok": False, "name": name, "adapter": chosen_adapter, "tier": tier,
-                "model": res1.model, "duration": total_duration, "resumed": False,
-                "conversation_id": res1.conversation_id, "job_dir": str(job_dir),
-                "workdir": str(work_dir), "files": _list_workdir_files(work_dir),
-                "report_tail": (res1.text or res1.error or "")[-REPORT_TAIL_CHARS:],
-                "error": err_msg,
-            }
-        res2, dur2 = _invoke_and_record(
-            inst_cfg, adapter, chosen_adapter, RESUME_PROMPT, tier, work_dir, timeout,
-            resume_id=res1.conversation_id,
+    from hushai_agent import lock as _lock
+
+    try:
+        model_lock_ctx = _lock.model_lock(inst_cfg)
+        model_lock_ctx.__enter__()
+    except _lock.LockBusy as exc:
+        return _abort_res(f"模型调用锁繁忙: {exc}", f"name={name}; reason=model-lock-busy")
+
+    try:
+        res1, dur1 = _invoke_and_record(
+            inst_cfg, adapter, chosen_adapter, task_text, tier, work_dir, timeout, resume_id=None,
         )
-        _save_raw_output(job_dir / "out.json", res2, state_dir)
-        resumed = True
-        final_res = res2
-        total_duration = round(dur1 + dur2, 4)
-    else:
-        _save_raw_output(job_dir / "out.json", res1, state_dir)
+        resumed = False
+        final_res = res1
+        total_duration = dur1
+
+        if res1.interrupted and res1.conversation_id:
+            _save_raw_output(job_dir / "out.pre.json", res1, state_dir)
+            if ledger.calls_today(inst_cfg) >= inst_cfg.max_daily_calls:
+                res_err = _abort_res("中断后准备续跑时每日调用预算已用尽", f"name={name}; resumed=False; reason=budget-on-resume", res1.model, res1.conversation_id, total_duration)
+                res_err["report_tail"] = (res1.text or res1.error or "")[-REPORT_TAIL_CHARS:]
+                return res_err
+            res2, dur2 = _invoke_and_record(
+                inst_cfg, adapter, chosen_adapter, RESUME_PROMPT, tier, work_dir, timeout,
+                resume_id=res1.conversation_id,
+            )
+            _save_raw_output(job_dir / "out.json", res2, state_dir)
+            resumed = True
+            final_res = res2
+            total_duration = round(dur1 + dur2, 4)
+        else:
+            _save_raw_output(job_dir / "out.json", res1, state_dir)
+    finally:
+        model_lock_ctx.__exit__(None, None, None)
 
     note = f"name={name}; adapter={chosen_adapter}; tier={tier}; resumed={resumed}"
     if final_res.error:

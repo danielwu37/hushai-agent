@@ -11,9 +11,8 @@ from typing import Any, Callable
 
 from hushai_agent import clock, install
 from hushai_agent.config import ConfigError, InstanceConfig
-from hushai_agent.fsio import append_line_with_header, atomic_write
+from hushai_agent.fsio import atomic_write
 from hushai_agent.heal_checks_ext import _default_cmd_runner
-from hushai_agent.inboxfmt import format_inbox_line
 from hushai_agent.paths import (
     get_instance_config_dir,
     get_instance_config_file,
@@ -27,7 +26,6 @@ QUOTA_EXHAUSTED_PATTERNS = (
     re.compile(r"You're out of usage credits", re.I),
     re.compile(r'"error"\s*:\s*"rate_limit"'),
 )
-TODAY_SWITCH_ALERT = "- 系统：管家已临时切到 agy，Claude 额度恢复后说「切回 Claude」"
 
 
 def get_backend(cfg: InstanceConfig) -> str:
@@ -66,25 +64,22 @@ def render_steward_kit(cfg: InstanceConfig, out_dir: Path, door: str | None = No
 
     hooks_obj = {
         "hushai-steward": {
-            "SessionStart": [
-                {
-                    "type": "command",
-                    "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}",
-                }
-            ],
+            "SessionStart": [{"type": "command", "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}"}],
             "Stop": [
-                {
-                    "type": "command",
-                    "command": f"{hushai_cmd} capture --instance {cfg.name} --door {target_door}",
-                },
-                {
-                    "type": "command",
-                    "command": f"{hushai_cmd} reconcile --instance {cfg.name}",
-                },
+                {"type": "command", "command": f"{hushai_cmd} capture --instance {cfg.name} --door {target_door}"},
+                {"type": "command", "command": f"{hushai_cmd} reconcile --instance {cfg.name}"},
             ],
         }
     }
-    agy_settings = {"trustedWorkspaces": [str(cfg.vault)]}
+    from hushai_agent.doorkit import AGY_ASK_RULES, AGY_DENY_RULES
+
+    agy_settings = {
+        "trustedWorkspaces": [str(cfg.vault)],
+        "permissions": {
+            "deny": AGY_DENY_RULES,
+            "ask": AGY_ASK_RULES,
+        },
+    }
     agy_settings_path = out_dir / "agy-settings.json"
     agy_settings_path.write_text(json.dumps(agy_settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -132,7 +127,7 @@ def status(cfg: InstanceConfig, hooks: dict[str, Any] | None = None) -> dict[str
     if "steward_tmux_alive" in (hooks or {}):
         tmux_alive = bool((hooks or {})["steward_tmux_alive"])
     else:
-        rc_tmux, _ = run_cmd(["tmux", "has-session", "-t", f"={session}"], timeout=10)
+        rc_tmux, _ = run_cmd(["tmux", "-L", session, "has-session", "-t", f"={session}"], timeout=10)
         tmux_alive = rc_tmux == 0
 
     return {
@@ -149,15 +144,17 @@ def status(cfg: InstanceConfig, hooks: dict[str, Any] | None = None) -> dict[str
     }
 
 
-def _write_steward_inbox(cfg: InstanceConfig, prev: str, curr: str, reason: str) -> str:
-    now_dt = clock.now(cfg)
-    date_str, time_str = now_dt.strftime("%Y-%m-%d"), now_dt.strftime("%H:%M")
-    domain = "AI" if "AI" in cfg.domains else cfg.domains[0]
-    did = f"管家切换（{reason}）：切前 {prev}，切后 {curr}"
-    line = format_inbox_line(time_str=time_str, domain=domain, did=did, lang=cfg.lang, allowed_domains=cfg.allowed_domains)
-    inbox_file = cfg.vault / "hub" / "inbox" / f"{date_str}-{cfg.steward_door}.md"
-    append_line_with_header(inbox_file, f"# {date_str} {cfg.steward_door}", line, [cfg.vault])
-    return str(inbox_file)
+def _record_steward_alert(cfg: InstanceConfig, prev: str, curr: str, reason: str) -> str:
+    from hushai_agent import alerts
+
+    alerts.record_alert(
+        cfg,
+        kind="steward_switch",
+        level="info",
+        message=f"管家切换（{reason}）：切前 {prev}，切后 {curr}",
+        source=f"steward:{curr}",
+    )
+    return str(alerts.alerts_path(cfg))
 
 
 def use_backend(
@@ -168,20 +165,20 @@ def use_backend(
     reason: str = "手动切换",
     hooks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """切换管家后端（claude / agy）、更新启动脚本、写收件并重启服务。"""
+    """切换管家后端（claude / agy）、更新启动脚本、记录运维告警并重启服务。"""
     from hushai_agent import doorkit
     from hushai_agent.heal import operate_systemd_unit
 
     if backend not in VALID_BACKENDS:
         raise ConfigError(f"不支持的管家后端: {backend}")
     prev = get_backend(cfg)
-    inbox_file = ""
+    alert_file = ""
     if not dry_run:
         prev = set_backend(cfg, backend)
         doorkit_dir = get_instance_config_dir(cfg.name) / "doorkit"
         doorkit_dir.mkdir(parents=True, exist_ok=True)
         doorkit.render_doorkit(cfg, doorkit_dir, adapter="all", door=cfg.steward_door)
-        inbox_file = _write_steward_inbox(cfg, prev, backend, reason)
+        alert_file = _record_steward_alert(cfg, prev, backend, reason)
 
     unit = f"hushai-{cfg.name}-steward.service"
     restarted, restart_msg = False, "已跳过重启 (--no-restart)"
@@ -195,7 +192,7 @@ def use_backend(
         "previous_backend": prev,
         "backend": backend,
         "reason": reason,
-        "inbox_file": inbox_file,
+        "alert_file": alert_file,
         "service": unit,
         "restarted": restarted,
         "restart_detail": restart_msg,
@@ -229,8 +226,9 @@ def detect_claude_quota_exhausted(cfg: InstanceConfig, hooks: dict[str, Any] | N
             idx = raw.rfind("[hushai-steward start backend=claude")
             texts.append(raw[idx:] if idx >= 0 else raw[-8000:])
         run_cmd: Callable[..., tuple[int, str]] = (hooks or {}).get("cmd_runner") or _default_cmd_runner
+        session = f"hushai-{cfg.name}"
         # 只看屏幕最后 40 行、精确会话名（结尾冒号：tmux 3.2 的 capture-pane 不接受无冒号的 =名）；更早的滚屏多半是对话内容，容易误判
-        rc, pane = run_cmd(["tmux", "capture-pane", "-p", "-t", f"=hushai-{cfg.name}:", "-S", "-40"], timeout=5)
+        rc, pane = run_cmd(["tmux", "-L", session, "capture-pane", "-p", "-t", f"={session}:", "-S", "-40"], timeout=5)
         if rc == 0 and pane:
             texts.append(pane)
     for blob in texts:
@@ -241,8 +239,9 @@ def detect_claude_quota_exhausted(cfg: InstanceConfig, hooks: dict[str, Any] | N
 
 
 def check_steward_online(cfg: InstanceConfig, before: str | None, dry_run: bool, hooks: dict[str, Any]) -> dict[str, Any]:
-    """8. 管家在线：检查 tmux 会话与单元状态；Claude 额度用尽时自动切到 agy 并提示。"""
-    from hushai_agent.heal import _prepend_today_alert, operate_systemd_unit
+    """8. 管家在线：检查 tmux 会话与单元状态；Claude 额度用尽时自动切到 agy 并记告警。"""
+    from hushai_agent import alerts
+    from hushai_agent.heal import operate_systemd_unit
     from hushai_agent.heal_checks import _unit_installed
 
     unit = hooks.get("steward_unit") or f"hushai-{cfg.name}-steward.service"
@@ -262,12 +261,19 @@ def check_steward_online(cfg: InstanceConfig, before: str | None, dry_run: bool,
                 "tries": 1,
             }
         if not dry_run:
-            _prepend_today_alert(cfg, TODAY_SWITCH_ALERT)
+            alerts.record_alert(
+                cfg,
+                kind="steward_quota_switch",
+                level="warning",
+                message="管家已临时切到 agy",
+                suggestion="Claude 额度恢复后说「切回 Claude」或运行 hushai steward use claude",
+                source="heal:steward_online",
+            )
         return {
             "status": "healed",
             "problem": f"Claude 额度用尽（{hit}）",
             "action": "自动执行 hushai steward use agy 并重启管家服务",
-            "result": "已切换到 agy 并在 today.md 顶部提示",
+            "result": "已切换到 agy 并写入 alerts.jsonl 系统通知",
             "tries": 1,
         }
 

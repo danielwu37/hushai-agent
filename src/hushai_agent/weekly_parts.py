@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from hushai_agent import cursor, items, ledger, lock, runner, statusfile
-from hushai_agent.config import InstanceConfig, load_instance_config
+from hushai_agent.config import InstanceConfig, is_local_only_domain, load_instance_config
 from hushai_agent.digest_apply import commit_hub_if_git
 from hushai_agent.fsio import atomic_write, read_for_prompt
 from hushai_agent.guard import ensure_writable
@@ -79,6 +79,8 @@ def _collect_7d_lines(cfg: InstanceConfig, as_of_date: FlexDate) -> list[InboxRe
     checked: set[Path] = set()
     recs: list[InboxRecord] = []
     for rec in iter_inbox_lines(inbox_dir):
+        if is_local_only_domain(rec.domain, cfg):
+            continue
         r_date = FlexDate.from_any(rec.date)
         if r_date is None or r_date < start_date or r_date > as_of_date:
             continue
@@ -104,13 +106,18 @@ def build_weekly_prompt(
         f"{it.id}\t{it.owner}\t{it.sched.isoformat() if it.sched else '-'}\t"
         f"{it.due.isoformat() if it.due else '-'}\t{it.title}"
         for it in open_items
-        if it.status == "open"
+        if it.status == "open" and not is_local_only_domain(it.domain, cfg)
     ]
     status_strs = [
         f"{r.domain}｜{r.topic}｜{r.summary}｜verified={r.verified.isoformat() if r.verified else '-'}"
         for r in status_rows
+        if not is_local_only_domain(r.domain, cfg)
     ]
-    line_strs = [f"{r.line_id}\t{r.date} {r.door}\t{r.raw}" for r in records]
+    line_strs = [
+        f"{r.line_id}\t{r.date} {r.door}\t{r.raw}"
+        for r in records
+        if not is_local_only_domain(r.domain, cfg) and not r.raw.lstrip().startswith("- 系统：")
+    ]
 
     tpl = tpl.replace("{{TODAY}}", as_of_date.isoformat())
     tpl = tpl.replace("{{OPEN_ITEMS}}", "\n".join(open_strs) if open_strs else "（无）")

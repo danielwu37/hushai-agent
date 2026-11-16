@@ -19,6 +19,9 @@ from hushai_agent.heal_checks_ext import (
     check_memory_write,
     check_model_available,
     check_sync_ok,
+    digest_catchup_dates,
+    last_weekly_schedule_date,
+    weekly_ran_in_cycle,
 )
 from hushai_agent.paths import get_instance_state_dir
 
@@ -194,6 +197,7 @@ def check_timers_on_time(
     parsed = [(r, _parse_iso(r.get("ts"), tz)) for r in rows]
     first_dt = next((dt for _, dt in parsed if dt is not None), None)
 
+    weekly_sched_d = last_weekly_schedule_date(cfg, now_dt)
     for job_name, max_age in (("digest", datetime.timedelta(hours=26)), ("weekly", datetime.timedelta(days=8))):
         if before == job_name:
             continue
@@ -205,12 +209,17 @@ def check_timers_on_time(
         overdue = (last_ok is not None and (now_dt - last_ok) > max_age) or (
             last_ok is None and first_dt is not None and (now_dt - first_dt) > max_age
         )
+        if overdue and job_name == "weekly" and weekly_ran_in_cycle(cfg, weekly_sched_d, parsed, now_dt.date()):
+            overdue = False
         if overdue:
             problems.append(f"{job_name} 超过周期未成功运行")
             if not dry_run:
                 try:
-                    today_d = clock.today(cfg)
-                    (digest.run_digest if job_name == "digest" else weekly.run_weekly)(cfg, today_d)
+                    if job_name == "digest":
+                        d_as_of, d_for = digest_catchup_dates(cfg, now_dt)
+                        digest.run_digest(cfg, d_as_of, for_date=d_for)
+                    else:
+                        weekly.run_weekly(cfg, weekly_sched_d)
                     healed_msgs.append(f"补跑 {job_name} 成功")
                 except Exception as exc:
                     return {

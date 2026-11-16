@@ -5,6 +5,7 @@ Description=hushAi-agent {{INSTANCE}}: morning brief page (127.0.0.1 only)
 Type=simple
 User={{USER}}
 Environment=HOME={{HOME}}
+Environment=TZ={{TZ}}
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 ExecStart={{HUSHAI}} serve --port {{PORT}} --instance {{INSTANCE}}

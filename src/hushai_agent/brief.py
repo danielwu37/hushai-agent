@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from hushai_agent import candidates, clock, items
+from hushai_agent import alerts, candidates, clock, items
 from hushai_agent.config import InstanceConfig
 from hushai_agent.fsio import atomic_write
 from hushai_agent.items import FlexDate, OpenItem
@@ -105,9 +105,11 @@ def build_brief(cfg: InstanceConfig) -> dict[str, Any]:
         {"id": c.id, "kind": c.kind, "text": c.text}
         for c in candidates.pending(candidates.load(cfg))[:MAX_CANDIDATES]
     ]
+    sys_alerts = alerts.load_recent_alerts(cfg, hours=48, limit=5)
     return {
         "for_date": for_date.isoformat(), "degraded": DEGRADED_QUOTE in text,
         "todos": todos, "decisions": decisions, "candidates": cands, "suspects": suspects,
+        "alerts": sys_alerts,
     }
 
 
@@ -144,6 +146,11 @@ def render_md(brief: dict[str, Any]) -> str:
         lines += ["", "## 疑似已办"]
         lines += [f"- {s['title']}（{s['id']}｜{s['reason']}）" for s in brief["suspects"]]
         how.append(f"- 确认已办：`完成 {brief['suspects'][0]['id']}`；还没办就不用写")
+    if brief.get("alerts"):
+        lines += ["", "## 系统通知"]
+        for a in brief["alerts"]:
+            sug = f"｜建议：{a['suggestion']}" if a.get("suggestion") else ""
+            lines.append(f"- [{a.get('level', 'info')}] {a['message']}{sug}")
     if not how:
         lines += ["", "（今天没有要你处理的事）"]
     else:

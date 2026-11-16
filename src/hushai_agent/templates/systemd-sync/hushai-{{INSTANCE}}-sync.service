@@ -7,10 +7,11 @@ After=network-online.target
 Type=oneshot
 User={{USER}}
 Environment=HOME={{HOME}}
+Environment=TZ={{TZ}}
 Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
 ExecStart={{HUSHAI}} sync --instance {{INSTANCE}}
 Nice=10
 MemoryMax={{MEMORY_MAX}}
-TimeoutStartSec=10min
+TimeoutStartSec=15min

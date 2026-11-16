@@ -6,7 +6,7 @@ import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from hushai_agent.config import InstanceConfig
+from hushai_agent.config import InstanceConfig, is_local_only_domain
 from hushai_agent.fsio import read_for_prompt
 from hushai_agent.inboxscan import InboxRecord
 from hushai_agent.items import VALID_OWNERS, FlexDate, ItemFormatError, OpenItem
@@ -108,6 +108,8 @@ def build_prompt(
     checked_paths: set[Path] = set()
     line_strs: list[str] = []
     for rec in records:
+        if is_local_only_domain(rec.domain, cfg) or rec.raw.lstrip().startswith("- 系统："):
+            continue
         if rec.path not in checked_paths and rec.path.exists():
             read_for_prompt(rec.path, cfg.vault, cfg.local_only)
             checked_paths.add(rec.path)
@@ -115,6 +117,8 @@ def build_prompt(
 
     open_strs: list[str] = []
     for it in items:
+        if is_local_only_domain(it.domain, cfg):
+            continue
         was_open = (
             (pre_open_ids is not None and it.id in pre_open_ids)
             or getattr(it, "_closed_this_round", False)

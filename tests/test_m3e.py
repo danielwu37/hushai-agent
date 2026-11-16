@@ -17,7 +17,7 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from hushai_agent import capture, digest, heal, heal_checks, ledger, runner  # noqa: E402
+from hushai_agent import alerts, capture, digest, heal, heal_checks, ledger, runner  # noqa: E402
 from hushai_agent.adapters import proc  # noqa: E402
 from hushai_agent.config import load_instance_config  # noqa: E402
 from hushai_agent.validate import validate_vault  # noqa: E402
@@ -80,7 +80,7 @@ class TestM3e(unittest.TestCase):
         self.assertTrue("超时" in detail or "失败" in detail or "timeout" in detail.lower())
 
     def test_03_self_healed_writes_inbox_not_today(self) -> None:
-        """3. 已自愈：写账本 + hub/inbox/<日期>-heal.md 一行，不改 today.md。"""
+        """3. 已自愈：写账本 + <state>/alerts.jsonl 一条，不写 -heal.md 也不改 today.md。"""
         today_file = self.vault / "hub" / "today.md"
         orig_today = today_file.read_text(encoding="utf-8")
         watch_state = {"active": False}
@@ -100,15 +100,13 @@ class TestM3e(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["result"], "ok")
         self.assertEqual(today_file.read_text(encoding="utf-8"), orig_today)
-        heal_inbox = self.vault / "hub" / "inbox" / "2026-03-02-heal.md"
-        self.assertTrue(heal_inbox.is_file())
-        content = heal_inbox.read_text(encoding="utf-8")
-        self.assertIn("自愈：", content)
-        self.assertIn("hushai-demo-watch.path", content)
+        self.assertFalse((self.vault / "hub" / "inbox" / "2026-03-02-heal.md").exists())
+        recent = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertTrue(any("自愈：" in a.get("message", "") and "hushai-demo-watch.path" in a.get("message", "") for a in recent))
         self.assertTrue(validate_vault(self.vault)["ok"])
 
     def test_04_failed_twice_reports_to_today_with_24h_dedup(self) -> None:
-        """4. 2 次仍失败上报：写 today.md 顶部一条；24 小时内再跑不重复写；账本记 needs_human。"""
+        """4. 2 次仍失败上报：写 alerts.jsonl（不污染 today.md）；24 小时内再跑不重复写；账本记 needs_human。"""
         calls: list[list[str]] = []
 
         def _always_inactive(argv: list[str], timeout: int = 15) -> tuple[int, str]:
@@ -124,16 +122,17 @@ class TestM3e(unittest.TestCase):
         self.assertEqual(len(res1["alerts_written"]), 1)
 
         today_text1 = (self.vault / "hub" / "today.md").read_text(encoding="utf-8")
-        self.assertEqual(today_text1.count("- 系统："), 1)
-        self.assertIn("坏了，建议", today_text1)
+        self.assertEqual(today_text1.count("- 系统："), 0)
+        recent1 = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertEqual(sum(1 for a in recent1 if "坏了，建议" in a.get("message", "")), 1)
 
         # 2 小时后再跑：同一问题在 24 小时内不重复写入
         os.environ["HUSHAI_NOW"] = "2026-03-02T12:00:00"
         res2 = heal.run_heal(self.cfg(), hooks=hooks)
         self.assertEqual(res2["result"], "needs_human")
         self.assertEqual(res2["alerts_written"], [])
-        today_text2 = (self.vault / "hub" / "today.md").read_text(encoding="utf-8")
-        self.assertEqual(today_text2.count("- 系统："), 1)
+        recent2 = alerts.load_recent_alerts(self.cfg(), limit=20)
+        self.assertEqual(sum(1 for a in recent2 if "坏了，建议" in a.get("message", "")), 1)
 
         heal_jobs = [r for r in ledger.read(self.cfg()) if r.get("job") == "heal"]
         self.assertEqual([r["result"] for r in heal_jobs], ["needs_human", "needs_human"])

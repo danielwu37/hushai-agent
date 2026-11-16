@@ -18,6 +18,7 @@ DEFAULT_ROUTING_MAX_DAILY = 10
 DEFAULT_CANDIDATES_PENDING = 20
 DEFAULT_SYNC_TOOL = "rclone"
 DEFAULT_SYNC_TIMEOUT = 60
+DEFAULT_SYNC_SERVER_DOORS = ("web", "muse", "heal")
 ROUTING_RESERVED = frozenset({"enabled", "trusted_doors", "max_daily"})
 
 
@@ -36,6 +37,9 @@ class ExtConfig:
     sync_tool: str = DEFAULT_SYNC_TOOL
     sync_remote: str = ""
     sync_timeout: int = DEFAULT_SYNC_TIMEOUT
+    sync_pull_doors: tuple[str, ...] = ()
+    sync_server_doors: tuple[str, ...] = DEFAULT_SYNC_SERVER_DOORS
+    capture_default_domain: str = ""
 
 
 def _csv(raw: str) -> tuple[str, ...]:
@@ -87,6 +91,10 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
     sync_tool = parser.get("sync", "tool", fallback="").strip() or DEFAULT_SYNC_TOOL
     sync_remote = parser.get("sync", "remote", fallback="").strip()
     sync_timeout = _int(parser, "sync", "timeout", DEFAULT_SYNC_TIMEOUT, allow_zero=False)
+    sync_pull_doors = _csv(parser.get("sync", "pull_doors", fallback=""))
+    srv_raw = parser.get("sync", "server_doors", fallback="").strip()
+    sync_server_doors = _csv(srv_raw) if srv_raw else DEFAULT_SYNC_SERVER_DOORS
+    capture_default_domain = parser.get("capture", "default_domain", fallback="").strip()
 
     return ExtConfig(
         exchange_ext=exchange_ext,
@@ -100,4 +108,7 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
         sync_tool=sync_tool,
         sync_remote=sync_remote,
         sync_timeout=sync_timeout,
+        sync_pull_doors=sync_pull_doors,
+        sync_server_doors=sync_server_doors,
+        capture_default_domain=capture_default_domain,
     )

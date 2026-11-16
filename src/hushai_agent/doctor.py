@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from hushai_agent import brain_cfg, clock, cursor, ledger
+from hushai_agent import alerts, brain_cfg, clock, cursor, ledger
 from hushai_agent.config import ConfigError, InstanceConfig, load_instance_config
 from hushai_agent.inboxscan import iter_inbox_lines
 from hushai_agent.items import FlexDate
@@ -106,9 +106,14 @@ def _check_vault_git(vault_path: Path) -> CheckItem:
 
 
 def _check_local_only(cfg: InstanceConfig) -> CheckItem:
-    """检查 [privacy] local_only 黑名单配置是否合法（路径不存在也算 OK，绝对路径或含 .. 为 FAIL）。"""
+    """检查 [privacy] local_only 路径黑名单与 local_only_domains 领域隔离配置。"""
+    domains_note = ",".join(cfg.local_only_domains) if cfg.local_only_domains else "未设置"
     if not cfg.local_only:
-        return CheckItem(id="local-only", level="OK", message="未配置或无需额外 local_only 路径")
+        return CheckItem(
+            id="local-only",
+            level="OK",
+            message=f"未配置额外 local_only 路径；本地隔离领域={domains_note}",
+        )
 
     invalid: list[str] = []
     missing: list[str] = []
@@ -132,9 +137,13 @@ def _check_local_only(cfg: InstanceConfig) -> CheckItem:
         return CheckItem(
             id="local-only",
             level="OK",
-            message=f"local_only 黑名单规则正常（尚未创建: {', '.join(missing)}）",
+            message=f"local_only 黑名单规则正常（尚未创建: {', '.join(missing)}）；本地隔离领域={domains_note}",
         )
-    return CheckItem(id="local-only", level="OK", message="local_only 路径均已存在")
+    return CheckItem(
+        id="local-only",
+        level="OK",
+        message=f"local_only 路径均已存在；本地隔离领域={domains_note}",
+    )
 
 
 def _parse_ledger_ts(ts_raw: Any, tz: ZoneInfo) -> datetime.datetime | None:
@@ -208,6 +217,41 @@ def _check_inbox_backlog(cfg: InstanceConfig) -> CheckItem:
     return CheckItem(id="inbox-backlog", level="OK", message="无超过 2 天的未处理收件积压")
 
 
+def _check_expired_inbox_lines(cfg: InstanceConfig) -> CheckItem:
+    """检查是否存在早于 window_days 窗口（默认 14 天）且未进游标的晚到/遗漏收件行。"""
+    today_date = clock.today(cfg)
+    window_cutoff = today_date - datetime.timedelta(days=cfg.window_days)
+    digested_ids = cursor.load_ids(cfg)
+    inbox_dir = cfg.vault / "hub" / "inbox"
+
+    expired = 0
+    for rec in iter_inbox_lines(inbox_dir):
+        rec_date = FlexDate.from_any(rec.date)
+        if rec_date is not None and rec_date < window_cutoff and rec.line_id not in digested_ids:
+            expired += 1
+
+    if expired > 0:
+        return CheckItem(
+            id="inbox-expired",
+            level="WARN",
+            message=f"存在 {expired} 条超过 {cfg.window_days} 天窗口（早于 {window_cutoff.isoformat()}）且未进入游标的晚到收件行，日常 digest 不会再收集",
+        )
+    return CheckItem(id="inbox-expired", level="OK", message=f"无超出 {cfg.window_days} 天窗口的遗漏收件行")
+
+
+def _check_recent_alerts(cfg: InstanceConfig) -> CheckItem:
+    """检查 <state>/alerts.jsonl 最近 24 小时内是否有未处理的严重系统告警。"""
+    recent = alerts.load_recent_alerts(cfg, hours=24, limit=20)
+    severe = [a for a in recent if a.get("level") in ("error", "critical", "needs_human")]
+    if severe:
+        return CheckItem(
+            id="system-alerts",
+            level="WARN",
+            message=f"最近 24 小时存在 {len(severe)} 条需关注系统告警（见 alerts.jsonl / 晨间简报）：{severe[0]['message']}",
+        )
+    return CheckItem(id="system-alerts", level="OK", message="最近 24 小时无严重系统告警")
+
+
 def run_doctor(instance: str) -> dict[str, Any]:
     """对指定实例执行全量体检，返回 {"checks": [...], "ok": bool}。"""
     checks: list[CheckItem] = []
@@ -237,6 +281,8 @@ def run_doctor(instance: str) -> dict[str, Any]:
     checks.append(_check_local_only(cfg))
     checks.append(_check_ledger_recent(cfg))
     checks.append(_check_inbox_backlog(cfg))
+    checks.append(_check_expired_inbox_lines(cfg))
+    checks.append(_check_recent_alerts(cfg))
 
     ok = all(item.level != "FAIL" for item in checks)
     return {

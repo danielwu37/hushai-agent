@@ -7,7 +7,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from hushai_agent.config import InstanceConfig
 from hushai_agent.fsio import atomic_write, ensure_dir
@@ -34,6 +34,25 @@ def job_wait_seconds() -> float:
         return max(0.0, float(os.environ.get("HUSHAI_LOCK_WAIT", "60")))
     except ValueError:
         return 60.0
+
+
+def model_wait_seconds() -> float:
+    """外部模型/CLI 调用锁（model.lock）的等待秒数。"""
+    raw = os.environ.get("HUSHAI_MODEL_LOCK_WAIT")
+    if raw is None or not raw.strip():
+        raw = os.environ.get("HUSHAI_LOCK_WAIT", "300")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 300.0
+
+
+@contextmanager
+def model_lock(cfg: InstanceConfig | str | Path, wait_seconds: float | None = None) -> Iterator[Path]:
+    """独立模型调用锁（model.lock），与 runner.lock 分离防止重型 CLI 并发及嵌套死锁。"""
+    wait = model_wait_seconds() if wait_seconds is None else max(0.0, wait_seconds)
+    with runner_lock(cfg, name="model.lock", wait_seconds=wait) as path:
+        yield path
 
 
 @contextmanager

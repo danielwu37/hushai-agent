@@ -69,15 +69,17 @@ def _run_mechanical_locked(inst_cfg: InstanceConfig) -> dict[str, Any]:
     as_of_str = as_of_date.isoformat()
 
     all_items = items.load(inst_cfg)
-    records = collect.collect(inst_cfg, as_of_date)
-    mech = mechanical.apply_actions(all_items, records)
+    raw_records = collect.collect(inst_cfg, as_of_date, include_local_domains=True)
+    mech = mechanical.apply_actions(all_items, raw_records)
+    records = collect.exclude_local_only_domains(inst_cfg, raw_records)
+    ai_rest = collect.exclude_local_only_domains(inst_cfg, mech.rest)
 
     rest_id_set = {r.line_id for r in mech.rest}
-    processed = [r for r in records if r.line_id not in rest_id_set]
+    processed = [r for r in raw_records if r.line_id not in rest_id_set]
     if not processed:
         bcfg = brain_cfg.load_brain_config(inst_cfg)
         brain_info = (
-            apply_brain_step(inst_cfg, as_of_date, records=mech.rest, dry_run=False, process_when_enabled=True)
+            apply_brain_step(inst_cfg, as_of_date, records=ai_rest, dry_run=False, process_when_enabled=True)
             if (bcfg.enabled and bcfg.daily_enabled)
             else {"filed_count": 0, "auto_linked": [], "broken_links": [], "underlinked_notes": [], "duplicate_candidates": []}
         )
@@ -121,8 +123,9 @@ def _run_mechanical_locked(inst_cfg: InstanceConfig) -> dict[str, Any]:
     refreshed_today = todaysel.refresh_today(existing_today, all_items, as_of_date)
 
     by_door: dict[str, int] = {}
-    for rec in processed:
-        by_door[rec.door] = by_door.get(rec.door, 0) + 1
+    for rec in records:
+        if rec.line_id not in rest_id_set:
+            by_door[rec.door] = by_door.get(rec.door, 0) + 1
     item_map = {it.id: it for it in all_items}
     mech_closed = [
         item_map[a.id]
@@ -215,7 +218,7 @@ def _run_mechanical_locked(inst_cfg: InstanceConfig) -> dict[str, Any]:
         "closing": build_closing_plan(
             inst_cfg,
             as_of_date,
-            mech.rest,
+            ai_rest,
             brain_mode="reconcile",
             resurface=False,
             commit_msg=f"mechanical {as_of_str} {now_dt.strftime('%H:%M')}",

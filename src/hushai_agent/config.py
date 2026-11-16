@@ -1,9 +1,8 @@
-"""实例配置文件（config.ini）的读写、生成与校验。"""
+"""实例配置文件（config.ini）的读写与严格校验。"""
 
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,26 +20,31 @@ from hushai_agent.config_loop import (
     parse_fallback_chain,
     parse_job_chain,
 )
+from hushai_agent.config_schema import (
+    DEFAULT_AGENTS_LINES,
+    DEFAULT_DOMAINS,
+    DEFAULT_DOMAINS_EN,
+    DEFAULT_DOMAINS_ZH,
+    DEFAULT_KNOWN_DOORS,
+    DEFAULT_LANG,
+    DEFAULT_LOCAL_ONLY,
+    DEFAULT_LOCAL_ONLY_DOMAINS,
+    DEFAULT_PROFILE_LINES,
+    DEFAULT_STATUS_INDEX_LINES,
+    DEFAULT_STEWARD_DOOR,
+    DEFAULT_TIMEZONE,
+    DEFAULT_TODAY_ITEMS,
+    InstanceConfig,
+    is_local_only_domain,
+    render_default_config,
+)
 from hushai_agent.fsio import atomic_write
-from hushai_agent.inboxfmt import ALL_RESERVED_DOMAINS, is_valid_door
+from hushai_agent.inboxfmt import is_valid_door
 from hushai_agent.paths import (
     get_instance_config_dir,
     get_instance_config_file,
     is_valid_instance_name,
 )
-
-DEFAULT_TIMEZONE = "Asia/Shanghai"
-DEFAULT_LANG = "zh"
-DEFAULT_STEWARD_DOOR = "steward"
-DEFAULT_KNOWN_DOORS = ("steward", "laptop", "web")
-DEFAULT_DOMAINS_ZH = ("工作", "家庭", "生活", "学习", "健康")
-DEFAULT_DOMAINS_EN = ("work", "family", "life", "study", "health")
-DEFAULT_DOMAINS = DEFAULT_DOMAINS_ZH
-DEFAULT_AGENTS_LINES = 200
-DEFAULT_PROFILE_LINES = 120
-DEFAULT_STATUS_INDEX_LINES = 80
-DEFAULT_TODAY_ITEMS = 7
-DEFAULT_LOCAL_ONLY = "domains/health"
 
 __all__ = [
     "ConfigError",
@@ -51,6 +55,7 @@ __all__ = [
     "DEFAULT_KNOWN_DOORS",
     "DEFAULT_LANG",
     "DEFAULT_LOCAL_ONLY",
+    "DEFAULT_LOCAL_ONLY_DOMAINS",
     "DEFAULT_MAX_DAILY_CALLS",
     "DEFAULT_PROFILE_LINES",
     "DEFAULT_STALE_DAYS",
@@ -62,6 +67,7 @@ __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "InstanceConfig",
     "VALID_TIERS",
+    "is_local_only_domain",
     "load_instance_config",
     "parse_chain",
     "parse_fallback_chain",
@@ -72,38 +78,6 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class InstanceConfig:
-    """解析后的实例配置对象。"""
-
-    name: str
-    vault: Path
-    timezone: str
-    lang: str
-    steward_door: str
-    known_doors: tuple[str, ...]
-    domains: tuple[str, ...]
-    agents_lines: int
-    profile_lines: int
-    status_index_lines: int
-    today_items: int
-    local_only: tuple[str, ...]
-    adapters: dict[str, dict[str, str]] = field(default_factory=dict)
-    digest: list[tuple[str, str]] = field(default_factory=list)
-    weekly: list[tuple[str, str]] = field(default_factory=list)
-    window_days: int = DEFAULT_WINDOW_DAYS
-    stale_days: int = DEFAULT_STALE_DAYS
-    status_archive_days: int = DEFAULT_STATUS_ARCHIVE_DAYS
-    max_daily_calls: int = DEFAULT_MAX_DAILY_CALLS
-    jobs: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
-    dispatch_adapter: str = ""
-
-    @property
-    def allowed_domains(self) -> frozenset[str]:
-        """返回该实例允许的所有领域（配置领域 + 保留领域）。"""
-        return frozenset((*self.domains, *ALL_RESERVED_DOMAINS))
-
-
 def validate_timezone(tz_name: str) -> None:
     """使用 zoneinfo 校验时区名称是否合法。"""
     if not tz_name or not tz_name.strip():
@@ -112,80 +86,6 @@ def validate_timezone(tz_name: str) -> None:
         ZoneInfo(tz_name.strip())
     except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
         raise ConfigError(f"非法时区: {tz_name}") from exc
-
-
-def render_default_config(
-    name: str,
-    vault_path: Path,
-    timezone: str = DEFAULT_TIMEZONE,
-    lang: str = DEFAULT_LANG,
-    local_only: str = DEFAULT_LOCAL_ONLY,
-) -> str:
-    """生成标准 config.ini 文本内容。"""
-    known_str = ",".join(DEFAULT_KNOWN_DOORS)
-    domains = DEFAULT_DOMAINS_EN if lang == "en" else DEFAULT_DOMAINS_ZH
-    domains_str = ",".join(domains)
-    lines = [
-        "[instance]",
-        f"name = {name}",
-        f"vault = {vault_path}",
-        f"timezone = {timezone}",
-        f"lang = {lang}",
-        "",
-        "[doors]",
-        f"steward = {DEFAULT_STEWARD_DOOR}",
-        f"known = {known_str}",
-        "",
-        "[domains]",
-        f"names = {domains_str}",
-        "",
-        "[limits]",
-        f"agents_lines = {DEFAULT_AGENTS_LINES}",
-        f"profile_lines = {DEFAULT_PROFILE_LINES}",
-        f"status_index_lines = {DEFAULT_STATUS_INDEX_LINES}",
-        f"today_items = {DEFAULT_TODAY_ITEMS}",
-        "",
-        "[privacy]",
-        f"local_only = {local_only}",
-        "",
-        "[adapters]",
-        "# <名字>.type = fake | claude | agy（省略时 type 等于名字）",
-        "# fake 另需 <名字>.fixtures = 样例目录；<名字>.light / <名字>.heavy = 模型名",
-        "# claude / agy 可选 <名字>.command（默认等于类型名）、<名字>.timeout（秒，默认 180）",
-        "",
-        "[jobs]",
-        "digest =",
-        "weekly =",
-        "dispatch =",
-        f"window_days = {DEFAULT_WINDOW_DAYS}",
-        f"stale_days = {DEFAULT_STALE_DAYS}",
-        f"status_archive_days = {DEFAULT_STATUS_ARCHIVE_DAYS}",
-        "",
-        "[budget]",
-        f"max_daily_calls = {DEFAULT_MAX_DAILY_CALLS}",
-        "",
-        "[routing]",
-        "enabled = false",
-        "trusted_doors =",
-        "max_daily = 10",
-        "",
-        "[brain]",
-        "enabled = false",
-        "daily_enabled = false",
-        "weekly_enabled = false",
-        "resurface_enabled = false",
-        "monthly_enabled = false",
-        "daily_time = 21:00",
-        "weekly_day = Sun",
-        "weekly_time = 18:00",
-        "resurface_time = 09:00",
-        "monthly_time = 09:30",
-        "min_links = 2",
-        "stale_months = 6",
-        "index_max_lines = 200",
-        "",
-    ]
-    return "\n".join(lines)
 
 
 def write_instance_config(
@@ -276,6 +176,13 @@ def load_instance_config(instance: str) -> InstanceConfig:
     local_only = tuple(
         p.strip() for p in parser.get("privacy", "local_only").split(",") if p.strip()
     )
+    if parser.has_option("privacy", "local_only_domains"):
+        local_only_domains = tuple(
+            d.strip() for d in parser.get("privacy", "local_only_domains").split(",") if d.strip()
+        )
+    else:
+        local_only_domains = DEFAULT_LOCAL_ONLY_DOMAINS
+
     (
         adapters,
         jobs,
@@ -298,6 +205,7 @@ def load_instance_config(instance: str) -> InstanceConfig:
         status_index_lines=status_index_lines,
         today_items=today_items,
         local_only=local_only,
+        local_only_domains=local_only_domains,
         adapters=adapters,
         digest=jobs.get("digest", []),
         weekly=jobs.get("weekly", []),

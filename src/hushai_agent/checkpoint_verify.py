@@ -7,25 +7,25 @@ import os
 from pathlib import Path
 from typing import Any
 
-from hushai_agent import brain_cfg, brain_process, brain_routines, brief, candidates, cortex, cursor, items, ledger, report, statusfile
-from hushai_agent.brain_cfg import load_brain_state, save_brain_state
-from hushai_agent.brain_model import (
-    IndexEntry,
-    extract_source_refs_from_md,
-    parse_index_entries,
-    parse_note_sections,
-    read_index_first,
-    upsert_index_entry,
+from hushai_agent import brain_cfg, brain_routines, brief, candidates, cortex, cursor, items, ledger, report, statusfile
+from hushai_agent.brain_cfg import load_brain_state
+from hushai_agent.brain_model import parse_index_entries
+from hushai_agent.checkpoint_verify_brain import (  # noqa: F401
+    _capture_brain_manifest,
+    _ensure_brain_index_entries,
+    _restore_brain_manifest,
+    _scan_brain_disk_refs,
+    _scan_eligible_brain_records,
+    _verify_and_repair_brain,
 )
 from hushai_agent.config import InstanceConfig
 from hushai_agent.config_ext import load_ext
 from hushai_agent.daily_state import load_daily_accumulated, update_daily_state
-from hushai_agent.digest_apply import append_corrections_idempotent, apply_brain_step, commit_hub_if_git, is_hub_git_dirty
+from hushai_agent.digest_apply import append_corrections_idempotent
+from hushai_agent.gitutil import commit_hub_if_git, is_hub_git_dirty
 from hushai_agent.fsio import append_line, atomic_write
-from hushai_agent.inboxfmt import ALL_RESERVED_DOMAINS
 from hushai_agent.inboxscan import iter_inbox_lines
 from hushai_agent.items import FlexDate
-from hushai_agent import mechanical
 from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.statusfile import StatusRow
 from hushai_agent.vault import add_inbox_entry
@@ -194,243 +194,6 @@ def _brief_matches_disk(cfg: InstanceConfig) -> bool:
         )
     except Exception:
         return False
-
-
-_SUBDIR_TOPIC = {"notes": "笔记", "sources": "来源", "people": "人物", "projects": "项目"}
-
-
-def _scan_brain_disk_refs(cfg: InstanceConfig) -> dict[str, list[dict[str, str]]]:
-    """扫描 hub/{notes,sources,people,projects}/*.md，按 source_ref 建立磁盘实存档案索引。"""
-    hub_dir = cfg.vault / "hub"
-    by_ref: dict[str, list[dict[str, str]]] = {}
-    for sub in ("notes", "sources", "people", "projects"):
-        sub_dir = hub_dir / sub
-        if not sub_dir.is_dir():
-            continue
-        for md in sorted(sub_dir.glob("*.md")):
-            try:
-                txt = md.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            parsed = parse_note_sections(txt)
-            title = str(parsed.get("title") or md.stem)
-            topic = str(parsed.get("topic") or _SUBDIR_TOPIC.get(sub, "笔记"))
-            rel = f"{sub}/{md.name}"
-            entry_type = sub[:-1] if sub.endswith("s") else ("person" if sub == "people" else sub)
-            info = {"rel": rel, "type": entry_type, "topic": topic, "title": title, "path": rel}
-            for ref in extract_source_refs_from_md(txt):
-                by_ref.setdefault(ref, []).append(info)
-    return by_ref
-
-
-def _scan_eligible_brain_records(
-    cfg: InstanceConfig, req_ids: list[str]
-) -> tuple[list[str], dict[str, Any]]:
-    """从计划 record_ids 中筛出非保留域、非机械动作且正文非空的第二大脑输入及原记录映射。"""
-    if not req_ids:
-        return [], {}
-    req_set = set(req_ids)
-    by_id = {r.line_id: r for r in iter_inbox_lines(cfg.vault / "hub" / "inbox") if r.line_id in req_set}
-    eligible: list[str] = []
-    rec_map: dict[str, Any] = {}
-    for lid in req_ids:
-        rec = by_id.get(lid)
-        if rec is None:
-            eligible.append(lid)
-            continue
-        if rec.domain in ALL_RESERVED_DOMAINS:
-            continue
-        if mechanical.parse_action(rec.did) is not None:
-            continue
-        if str(rec.did or "").strip():
-            eligible.append(lid)
-            rec_map[lid] = rec
-    return eligible, rec_map
-
-
-def _ensure_brain_index_entries(
-    cfg: InstanceConfig,
-    items_to_index: list[dict[str, str]],
-    max_lines: int,
-) -> None:
-    """确保每份第二大脑目标文件都在 hub/index.md 中有有效链接。"""
-    _, entries = read_index_first(cfg)
-    idx_targets = {e.target.strip().lstrip("./") for e in entries}
-    for item in items_to_index:
-        rel = str(item.get("rel") or item.get("path") or "").strip().lstrip("./")
-        if not rel or rel in idx_targets:
-            continue
-        sub = rel.split("/", 1)[0]
-        title = str(item.get("title") or item.get("name") or Path(rel).stem)
-        topic = str(item.get("topic") or _SUBDIR_TOPIC.get(sub, "笔记"))
-        upsert_index_entry(
-            cfg,
-            IndexEntry(topic=topic, title=title, target=rel, brief=title[:50]),
-            max_lines=max_lines,
-            write=True,
-        )
-        idx_targets.add(rel)
-
-
-def _capture_brain_manifest(
-    cfg: InstanceConfig,
-    as_of_str: str,
-    filed_entries: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """捕获第二大脑实际落盘文件及 daily/<date>.md 的校验清单。"""
-    hub_dir = cfg.vault / "hub"
-    seen_rel: set[str] = set()
-    filed_manifest: list[dict[str, Any]] = []
-    for entry in filed_entries:
-        rel = str(entry.get("path") or entry.get("rel") or "").strip().lstrip("./")
-        if not rel or rel in seen_rel:
-            continue
-        fpath = hub_dir / rel
-        if not fpath.is_file():
-            continue
-        seen_rel.add(rel)
-        text = fpath.read_text(encoding="utf-8")
-        sub = rel.split("/", 1)[0]
-        parsed = parse_note_sections(text)
-        filed_manifest.append({
-            "rel": rel,
-            "sha256": sha256_text(text),
-            "content": text,
-            "topic": str(entry.get("topic") or parsed.get("topic") or _SUBDIR_TOPIC.get(sub, "笔记")),
-            "title": str(entry.get("title") or entry.get("name") or parsed.get("title") or Path(rel).stem),
-        })
-
-    manifest: dict[str, Any] = {"filed": filed_manifest}
-    daily_rel = f"daily/{as_of_str}.md"
-    daily_path = hub_dir / daily_rel
-    if daily_path.is_file():
-        dtext = daily_path.read_text(encoding="utf-8")
-        manifest["daily_rel"] = daily_rel
-        manifest["daily_sha256"] = sha256_text(dtext)
-        manifest["daily_content"] = dtext
-    return manifest
-
-
-def _restore_brain_manifest(cfg: InstanceConfig, manifest: dict[str, Any], max_index_lines: int) -> None:
-    """依显式 brain_targets 清单校验并修补磁盘与 index.md 的任何缺失或字节篡改。"""
-    hub_dir = cfg.vault / "hub"
-    filed = list(manifest.get("filed") or [])
-    for spec in filed:
-        rel = str(spec.get("rel") or "").strip().lstrip("./")
-        sha = str(spec.get("sha256") or "")
-        content = str(spec.get("content") or "")
-        if not rel:
-            continue
-        fpath = hub_dir / rel
-        if sha and content and file_sha256(fpath) != sha:
-            atomic_write(fpath, content, [cfg.vault])
-    if filed:
-        _ensure_brain_index_entries(cfg, filed, max_index_lines)
-
-    daily_rel = str(manifest.get("daily_rel") or "")
-    daily_sha = str(manifest.get("daily_sha256") or "")
-    daily_content = str(manifest.get("daily_content") or "")
-    if daily_rel and daily_sha and daily_content:
-        dpath = hub_dir / daily_rel
-        if file_sha256(dpath) != daily_sha:
-            atomic_write(dpath, daily_content, [cfg.vault])
-
-
-def _verify_and_repair_brain(
-    cfg: InstanceConfig,
-    closing: dict[str, Any],
-    bcfg: brain_cfg.BrainConfig,
-    as_of_date: FlexDate,
-    as_of_str: str,
-    brain_mode: str,
-    out: dict[str, Any],
-) -> None:
-    """不信任 JSON 中的 brain_done 与单一游标：实盘核验全部第二大脑目标并修复缺漏。"""
-    manifest = dict(closing.get("brain_targets") or {})
-    if manifest:
-        _restore_brain_manifest(cfg, manifest, bcfg.index_max_lines)
-
-    if not (bcfg.enabled and bcfg.daily_enabled):
-        if brain_mode == "daily":
-            out["brain"] = apply_brain_step(
-                cfg, as_of_date, records=None, dry_run=False, process_when_enabled=False
-            )
-        return
-
-    hub_dir = cfg.vault / "hub"
-    disk_refs = _scan_brain_disk_refs(cfg)
-    eligible_ids, eligible_recs = _scan_eligible_brain_records(
-        cfg, [str(x) for x in (closing.get("brain_record_ids") or []) if str(x)]
-    )
-    req_ex = [str(x) for x in (closing.get("brain_exchange_files") or []) if str(x)]
-
-    disk_items_for_req: list[dict[str, str]] = []
-    unbacked_ids: list[str] = []
-    for lid in eligible_ids:
-        hits = disk_refs.get(lid) or []
-        rec = eligible_recs.get(lid)
-        subtargets_ok = (
-            brain_process.expected_targets_exist_for_record(hub_dir, rec, disk_refs)
-            if rec is not None
-            else bool(hits)
-        )
-        if not hits or not subtargets_ok:
-            unbacked_ids.append(lid)
-        if hits:
-            disk_items_for_req.extend(hits)
-
-    unbacked_ex: list[str] = []
-    for ex_rel in req_ex:
-        hits = disk_refs.get(ex_rel) or []
-        if not hits:
-            unbacked_ex.append(ex_rel)
-        else:
-            disk_items_for_req.extend(hits)
-
-    if disk_items_for_req:
-        _ensure_brain_index_entries(cfg, disk_items_for_req, bcfg.index_max_lines)
-
-    b_state = load_brain_state(cfg)
-    seen_ids = set(b_state.get("processed_inbox_ids") or [])
-    seen_ex = set(b_state.get("processed_exchange_files") or [])
-    evict_ids = [lid for lid in unbacked_ids if lid in seen_ids]
-    evict_ex = [ex for ex in unbacked_ex if ex in seen_ex]
-    if evict_ids or evict_ex:
-        evict_id_set, evict_ex_set = set(evict_ids), set(evict_ex)
-        b_state["processed_inbox_ids"] = [x for x in (b_state.get("processed_inbox_ids") or []) if x not in evict_id_set]
-        b_state["processed_exchange_files"] = [x for x in (b_state.get("processed_exchange_files") or []) if x not in evict_ex_set]
-        save_brain_state(cfg, b_state)
-        seen_ids = set(b_state.get("processed_inbox_ids") or [])
-        seen_ex = set(b_state.get("processed_exchange_files") or [])
-
-    needs_brain = (
-        any(lid not in seen_ids for lid in eligible_ids)
-        or any(ex not in seen_ex for ex in req_ex)
-        or bool(unbacked_ids)
-        or bool(unbacked_ex)
-    )
-    filed_entries: list[dict[str, Any]] = []
-    if needs_brain:
-        if brain_mode == "daily":
-            res = brain_routines.run_daily_brain(cfg, as_of=as_of_date, dry_run=False, _hold_lock=False)
-            out["brain_daily"] = res
-            filed_entries = list(res.get("filed") or [])
-        else:
-            res = apply_brain_step(cfg, as_of_date, records=None, dry_run=False, process_when_enabled=True)
-            out["brain"] = res
-            filed_entries = list(res.get("filed") or [])
-
-    daily_path = hub_dir / "daily" / f"{as_of_str}.md"
-    if brain_mode == "daily" and (eligible_ids or req_ex) and not daily_path.is_file():
-        repair_filed = filed_entries or disk_items_for_req
-        if repair_filed:
-            brain_routines.write_daily_brain_note(cfg, as_of_str, repair_filed, dry_run=False)
-
-    combined_filed = filed_entries or disk_items_for_req
-    if combined_filed:
-        new_manifest = _capture_brain_manifest(cfg, as_of_str, combined_filed)
-        if not manifest:
-            closing["brain_targets"] = new_manifest
 
 
 def verify_closing_steps(cfg: InstanceConfig, ckpt: dict[str, Any]) -> dict[str, Any]:

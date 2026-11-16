@@ -9,20 +9,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 <!-- 后续新增改动先写在此处，下个版本发布时自动归档至版本章节 -->
 
 ### Added
+- **系统告警独立账本 (`alerts.jsonl`)**：[`alerts.py`](src/hushai_agent/alerts.py) 将 `heal` 自愈/人工介入提示与管家切换告警统一写入 `<state>/alerts.jsonl`，不再污染 `hub/inbox/` 与 `hub/today.md`；[`brief.py`](src/hushai_agent/brief.py) 与 [`brief_html.py`](src/hushai_agent/brief_html.py) 在简报中展示「系统通知」，[`doctor.py`](src/hushai_agent/doctor.py) 检查 `system-alerts`（近 24 小时严重告警）与 `inbox-expired`（超出 `window_days` 的晚到未消化收件）。
+- **`[privacy] local_only_domains`**：默认隔离 `health,健康`，覆盖 `collect`、`judge`、`weekly_parts`、`routing`、`brain_collect`、`brain_process` 与 `brain_routines`，机械对账先局部处理再剥离敏感域，绝不进入外部模型提示词；并在 `hushai config` 菜单 `1 -> 7` 开放配置。
+- **`--with-model` 与 `[sync] pull_doors` / `server_doors`、`[capture] default_domain`**：`digest`/`weekly` 的 `--dry-run` 默认仅在全 `fake` 链路调模型，非 `fake` 适配需显式传 `--with-model` 才调真实模型；新增 `hushai digest --for-date`。
+- **`doorkit` 权限与高危操作拦截**：`claude-settings.json` 与 `agy-settings.json` 同步写入细粒度 `permissions.deny` 与 `permissions.ask` 规则。
 - `sync`：配了 `[sync] remote` 时渲染每 15 分钟的同步定时器（`templates/systemd-sync/`）。
 - `[gate] private_paths_scope`：`private_paths_file` 的规则只作用于列出的读根（相对该根匹配）；不配时保持原行为（对所有路径生效）。`local_only` 始终生效。
-- 闸门把旧路径 `00-我/日报/最新.md` 映射到 `hub/reports/morning-brief.md`。
-- 闸门 `put` 到 `music/Playlists/_输入清单/待下载/` 只收该目录下的 `.txt` 清单。
-- Muse 闸门按 `00-我/…` 旧路径读取时，新位置找不到会回落到 `hub/reports/legacy-00-我/收件|日报` 与 `hub/exchange/{in,out}/legacy`；`ls` 合并列出两处。
 
 ### Changed
-- `weekly`：重写 `insights.md` 时，上一版里本周没有覆盖到的条目原样保留在「往期观察」一节（最多 40 条），不再整份清空。
+- **定时调度与事件防雪崩**：[`install.py`](src/hushai_agent/install.py) 模板将 `heal.timer` 错峰至 `*:50:00`、`sync.timer` 改为 `*:00,15,45:00` 并加 `RandomizedDelaySec=30` 与 `TimeoutStartSec=15min`、全部 `.service` 显式注入 `Environment=TZ={{TZ}}`；`sync.py` 与 `on_event.py` 增加 `budget_seconds` 预算与 `sync pull --update` / 服务端写入端排除；`lock.py` 新增 `model.lock` 串行化 `runner` 与 `dispatch` 的外部模型调用。
+- **Muse 闸门通用化与安全写盘**：将个人历史映射（`legacy_prefix_map` / `legacy_fallback`）、`txt_only_dirs` 与 `deny_names` 解耦至 `[gate]` 配置；`put` 禁止回落 `legacy` 目录且改用 `-1`/`-2` 防覆盖分配；`append-inbox` 触发即时机械对账并用日志/账本记录异常。
+- **常驻管家与会话采集**：`steward.py` 与 `steward.service` 改用 `tmux -L hushai-<inst>` 独立 socket 隔离；`capture.py` 对 ASCII 领域启用词边界匹配，未命中回退至中性领域（`[capture] default_domain` / `生活`），并过滤系统通知噪音与记录状态读取异常。
+- **第二大脑增量性能与安全加固**：`brain_onboard` 过滤纯数字误输入（如 `"0"`）并按最多 10 条冷启动分批；`PERSON_AT_RE` 排除邮箱地址；笔记状态统一标为 `有出处`；`merge_duplicate_notes` 先改写全库入链再删除归档重复稿；`reconcile_brain_step` 跳过 O(n²) 全库去重扫描。
+- **大模块拆分与行数约束**：将超长模块拆分为职责单一的小文件，全部 `src/hushai_agent/*.py` 模块均控制在 300 行以内。
+- `weekly`：重写 `insights.md` 时保留全部 `insights-archive/insights-*.md` 历史归档；上一版未覆盖条目继续保留在「往期观察」一节。
 - 今日待办排序：今天起 2 天内到期的排在已逾期之前。
-- `capture`：收件领域取话里点名的已配置领域，没有再用第一个领域。
 - 闸门 `append-inbox` 拒收时给出具体原因（开头、段数、「产物：」「待办：」）；越界拒绝提示列出实际配置的读根。
 - `steward.service` 模板改为 `Type=simple`：`ExecStartPre` 起 tmux 会话，主进程守着会话，会话没了由 `Restart=always` 拉起（`Type=forking` 在 tmux 3.2 上会卡在 activating）。
 
 ### Fixed
+- **修复跨午夜补跑与跨周误重跑 (`digest` / `weekly` / `heal`)**：凌晨 6 点前昨日未出 `digest` 自动回指昨日（目标为今日）；`heal_checks` 按 `digest_time` 计算补跑日，同 ISO 周内已跑过周报不再在次周初误触发补跑；修复 `hushai config` 菜单 8 手动跑 `digest`/`weekly` 缺少 `as_of` 参数报错。
+- **修复同步冲突文件名误判**：收紧 `validate_basic.SYNC_CONFLICT_RE`（兼容半全角 `(冲突)`/`（冲突）` 与 `_冲突版`），避免 `记忆冲突裁决规则.md` 等正常标题被误报 `WARN`。
 - `steward`：claudeMdExcludes 排除宿主机用户级 CLAUDE.md（remote-control 不支持 `--setting-sources`）。
 - `steward`：capture-pane 目标加冒号，适配 tmux 3.2。
 

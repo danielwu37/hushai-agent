@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import subprocess
-from pathlib import Path
 from typing import Any
 
 from hushai_agent import brain_process, items, statusfile
-from hushai_agent.fsio import append_line
 from hushai_agent.config import InstanceConfig
+from hushai_agent.gitutil import commit_hub_if_git, is_hub_git_dirty  # noqa: F401
+from hushai_agent.fsio import append_line
 from hushai_agent.inboxscan import InboxRecord
 from hushai_agent.items import FlexDate, OpenItem
 from hushai_agent.statusfile import StatusRow
@@ -231,71 +228,6 @@ def append_corrections_idempotent(
             existing_srcs.add(src_id)
         added += 1
     return added
-
-
-def is_hub_git_dirty(vault_path: Path) -> bool:
-    """直接核验 vault Git 仓库中 hub/ 是否仍有未提交变更。"""
-    if not (vault_path / ".git").exists() or shutil.which("git") is None:
-        return False
-    try:
-        res = subprocess.run(
-            ["git", "status", "--porcelain", "--", "hub"],
-            cwd=os.fspath(vault_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return res.returncode == 0 and bool(res.stdout.strip())
-    except OSError:
-        return False
-
-
-def commit_hub_if_git(vault_path: Path, message: str) -> bool:
-    """当 vault 是 Git 仓库且 hub/ 下有变更时，执行 git add -A hub 并提交一次。"""
-    if not (vault_path / ".git").exists() or shutil.which("git") is None:
-        return False
-
-    cwd = os.fspath(vault_path)
-    try:
-        res_add = subprocess.run(
-            ["git", "add", "-A", "hub"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res_add.returncode != 0:
-            return False
-
-        res_diff = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res_diff.returncode == 0:
-            return False
-
-        res_commit = subprocess.run(
-            [
-                "git",
-                "-c",
-                "user.name=hushai",
-                "-c",
-                "user.email=hushai@localhost",
-                "commit",
-                "-m",
-                message,
-            ],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return res_commit.returncode == 0
-    except OSError:
-        return False
 
 
 def build_append_targets_manifest(

@@ -176,7 +176,7 @@ class TestM2bExtra(unittest.TestCase):
             os.environ["HUSHAI_NOW"] = f"{d.isoformat()}T22:00:00"
             digest.run_digest(cfg, d)
 
-        # 预置 4 份历史归档以测试“只留最近 4 份”
+        # L-8：预置 4 份历史归档，周重写时永不删库，所有历史归档全部保留
         arch_dir = vault / "hub" / "reports" / "insights-archive"
         arch_dir.mkdir(parents=True, exist_ok=True)
         for old_d in ("2026-02-08", "2026-02-15", "2026-02-22", "2026-03-01"):
@@ -192,9 +192,9 @@ class TestM2bExtra(unittest.TestCase):
         self.assertIn("〔推测｜", new_insights)
 
         arch_files = sorted(p.name for p in arch_dir.glob("insights-*.md"))
-        self.assertEqual(len(arch_files), 4)
+        self.assertEqual(len(arch_files), 5)
         self.assertIn("insights-2026-03-08.md", arch_files)
-        self.assertNotIn("insights-2026-02-08.md", arch_files)
+        self.assertIn("insights-2026-02-08.md", arch_files)
         self.assertEqual((arch_dir / "insights-2026-03-08.md").read_text(encoding="utf-8"), orig_insights)
 
         weekly_rep = (vault / "hub" / "reports" / "weekly-2026-03-08.md").read_text(encoding="utf-8")

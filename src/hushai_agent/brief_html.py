@@ -113,7 +113,13 @@ def render_body(brief: dict[str, Any], live: bool) -> str:
         for s in brief["suspects"]:
             btns = [_btn("确认已办", "done", live, s["id"], primary=True), _btn("还没办", "hide", live)]
             out.append(_card(s["title"], f"{escape(s['id'])} · {escape(s['reason'])}", "", btns))
-    if not (brief["todos"] or brief["decisions"] or brief["candidates"] or brief["suspects"]):
+    if brief.get("alerts"):
+        out.append("<h2>系统通知</h2>")
+        for a in brief["alerts"]:
+            sug = f'<div class="rec">建议：{escape(str(a["suggestion"]))}</div>' if a.get("suggestion") else ""
+            meta = f"{escape(str(a.get('level', 'info')))} · {escape(str(a.get('ts', ''))[:16])}".strip(" ·")
+            out.append(_card(str(a.get("message", "")), meta, sug, []))
+    if not (brief["todos"] or brief["decisions"] or brief["candidates"] or brief["suspects"] or brief.get("alerts")):
         out.append('<div class="card"><div class="t">今天没有要你处理的事</div></div>')
     return "".join(out)
 

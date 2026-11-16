@@ -16,9 +16,64 @@ from hushai_agent.vault import init_instance
 DENY_RULES = [
     "Bash(rm -rf /*)",
     "Bash(rm -rf ~*)",
+    "Bash(rm -rf .*)",
+    "Bash(rm -rf hub*)",
     "Bash(git push --force*)",
+    "Bash(git reset --hard*)",
     "Bash(mkfs*)",
     "Bash(dd if=*)",
+    "Bash(chmod -R 777*)",
+    "Bash(shutdown*)",
+    "Bash(reboot*)",
+    "Bash(systemctl stop*)",
+    "Bash(systemctl disable*)",
+    "Write(/etc/*)",
+    "Write(/root/.ssh/*)",
+    "Write(/root/.config/*)",
+    "Write(/root/.claude/*)",
+    "Edit(/etc/*)",
+    "Edit(/root/.ssh/*)",
+    "Edit(/root/.config/*)",
+    "Edit(/root/.claude/*)",
+]
+
+ASK_RULES = [
+    "Bash(git push*)",
+    "Bash(rm *)",
+    "Bash(curl *)",
+    "Bash(wget *)",
+    "Bash(scp *)",
+    "Bash(rsync *)",
+    "Bash(systemctl *)",
+]
+
+AGY_DENY_RULES = [
+    "command(rm -rf /*)",
+    "command(rm -rf ~*)",
+    "command(rm -rf hub*)",
+    "command(git push --force*)",
+    "command(git reset --hard*)",
+    "command(mkfs*)",
+    "command(dd if=*)",
+    "command(chmod -R 777*)",
+    "command(shutdown*)",
+    "command(reboot*)",
+    "command(systemctl stop*)",
+    "command(systemctl disable*)",
+    "write_file(/etc/*)",
+    "write_file(/root/.ssh/*)",
+    "write_file(/root/.config/*)",
+    "write_file(/root/.claude/*)",
+]
+
+AGY_ASK_RULES = [
+    "command(git push*)",
+    "command(rm *)",
+    "command(curl *)",
+    "command(wget *)",
+    "command(scp *)",
+    "command(rsync *)",
+    "command(systemctl *)",
 ]
 
 
@@ -35,6 +90,7 @@ def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd
         "claudeMdExcludes": [_user_claude_md()],
         "permissions": {
             "deny": DENY_RULES,
+            "ask": ASK_RULES,
         },
         "hooks": {
             "SessionStart": [

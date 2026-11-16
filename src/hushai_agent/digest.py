@@ -6,18 +6,16 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    brain_cfg, candidates, checkpoint, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    candidates, checkpoint, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
 )
-from hushai_agent.checkpoint_verify import sha256_text
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
 from hushai_agent.daily_state import load_daily_accumulated, merge_daily_facts
 from hushai_agent.digest_apply import (
     apply_model_output,
-    build_append_targets_manifest,
     build_candidate_and_correction_lines,
-    build_closing_plan,
 )
+from hushai_agent.digest_plan import execute_digest_commit_plan, should_call_model_in_run
 from hushai_agent.fsio import atomic_write
 from hushai_agent.items import FlexDate
 from hushai_agent.paths import get_instance_state_dir
@@ -35,6 +33,7 @@ def run_digest(
     as_of: datetime.date | str,
     dry_run: bool = False,
     for_date: datetime.date | str | None = None,
+    with_model: bool = False,
 ) -> dict[str, Any]:
     """执行指定基准日期的每日汇总主流程，返回汇总摘要字典。"""
     inst_cfg = _resolve_cfg(cfg)
@@ -67,14 +66,16 @@ def run_digest(
         pre_open_ids = {it.id for it in all_items if it.status == "open"}
         archived_ids = items.load_archived_ids(inst_cfg)
         status_rows = statusfile.load(inst_cfg)
-        records = collect.collect(inst_cfg, as_of_date)
+        records = collect.collect(inst_cfg, as_of_date, include_local_domains=True)
         mech = mechanical.apply_actions(all_items, records)
+        ai_records = collect.exclude_local_only_domains(inst_cfg, records)
+        ai_rest = collect.exclude_local_only_domains(inst_cfg, mech.rest)
         ext = load_ext(inst_cfg)
         cand_manifest = candidates.apply_mech(inst_cfg, mech, ext.approval_doors, write=not dry_run)
         cortex_res = cortex.apply_mech(inst_cfg, mech, write=not dry_run)
 
         by_door: dict[str, int] = {}
-        for rec in records:
+        for rec in ai_records:
             by_door[rec.door] = by_door.get(rec.door, 0) + 1
 
         item_map = {it.id: it for it in all_items}
@@ -93,34 +94,37 @@ def run_digest(
         degraded: str | None = None
         dropped_entries: list[dict[str, Any]] = []
 
-        if mech.rest:
-            prompt = judge.build_prompt(inst_cfg, mech.rest, all_items, as_of_date)
-            known_line_ids = {r.line_id for r in records} | cursor.load_ids(inst_cfg)
-            existing_item_ids = {it.id for it in all_items} | set(archived_ids)
-            validator = judge.make_validator(
-                known_line_ids=known_line_ids,
-                item_ids=existing_item_ids,
-                domains=inst_cfg.domains,
-                n_lines=len(mech.rest),
-            )
-            meta = {
-                "job": "digest",
-                "date": as_of_str,
-                "inbox_dir": inst_cfg.vault / "hub" / "inbox",
-                "empty": {"items": [], "status_rows": [], "memory_candidates": []},
-            }
-            model_data, run_info = runner.run_model(
-                inst_cfg,
-                "digest",
-                prompt,
-                judge.SCHEMA,
-                meta,
-                validator,
-            )
-            if model_data is None:
-                degraded = str(run_info.get("degraded") or "all-failed")
+        if ai_rest:
+            if not should_call_model_in_run(inst_cfg, "digest", dry_run=dry_run, with_model=with_model):
+                degraded = "dry-run-no-model"
             else:
-                dropped_entries = list(model_data.get("_dropped") or [])
+                prompt = judge.build_prompt(inst_cfg, ai_rest, all_items, as_of_date)
+                known_line_ids = {r.line_id for r in ai_records} | cursor.load_ids(inst_cfg)
+                existing_item_ids = {it.id for it in all_items} | set(archived_ids)
+                validator = judge.make_validator(
+                    known_line_ids=known_line_ids,
+                    item_ids=existing_item_ids,
+                    domains=inst_cfg.domains,
+                    n_lines=len(ai_rest),
+                )
+                meta = {
+                    "job": "digest",
+                    "date": as_of_str,
+                    "inbox_dir": inst_cfg.vault / "hub" / "inbox",
+                    "empty": {"items": [], "status_rows": [], "memory_candidates": []},
+                }
+                model_data, run_info = runner.run_model(
+                    inst_cfg,
+                    "digest",
+                    prompt,
+                    judge.SCHEMA,
+                    meta,
+                    validator,
+                )
+                if model_data is None:
+                    degraded = str(run_info.get("degraded") or "all-failed")
+                else:
+                    dropped_entries = list(model_data.get("_dropped") or [])
 
         applied_info = apply_model_output(
             all_items=all_items,
@@ -231,72 +235,29 @@ def run_digest(
                 )
             atomic_write(dry_hub / "reports" / f"daily-{as_of_str}.md", daily_text, [state_dir])
         else:
-            keep_items, archive_items = items.split_archive(all_items, as_of_date)
-            open_items_text = items.render_open_items(keep_items, as_of_date)
-            rest_id_set = {r.line_id for r in mech.rest}
-            advance_ids = (
-                [r.line_id for r in records if r.line_id not in rest_id_set]
-                if degraded
-                else [r.line_id for r in records]
+            closing_res = execute_digest_commit_plan(
+                inst_cfg,
+                run_id=run_id,
+                as_of_date=as_of_date,
+                target_for_date=target_for_date,
+                all_items=all_items,
+                records=records,
+                ai_rest=ai_rest,
+                degraded=degraded,
+                today_text=today_text,
+                status_text=status_text,
+                index_text=index_text,
+                summary=summary,
+                daily_text=daily_text,
+                cand_lines=cand_lines,
+                mech_cand_count=len(mech.candidates),
+                ext=ext,
+                expected_cand_pairs=expected_cand_pairs,
+                corr_lines=corr_lines,
+                cand_manifest=cand_manifest,
+                cortex_res=cortex_res,
+                archived_status=archived_status,
             )
-            bcfg = brain_cfg.load_brain_config(inst_cfg)
-            plan: dict[str, Any] = {
-                "version": 1,
-                "kind": "digest",
-                "run_id": run_id,
-                "as_of": as_of_str,
-                "for_date": target_for_date.isoformat(),
-                "open_items": {
-                    "content": open_items_text,
-                    "sha256": sha256_text(open_items_text),
-                    "archived_lines": [
-                        {"id": it.id, "line": items.format_item_line(it)} for it in archive_items
-                    ],
-                },
-                "atomic_targets": {
-                    "hub/today.md": {"content": today_text, "sha256": sha256_text(today_text)},
-                    "hub/status.md": {"content": status_text, "sha256": sha256_text(status_text)},
-                    "hub/status-index.md": {"content": index_text, "sha256": sha256_text(index_text)},
-                },
-                "daily_state": {
-                    "run_id": run_id,
-                    "as_of": as_of_str,
-                    "cur_facts": summary,
-                    "is_mechanical": False,
-                    "daily_report_rel": f"hub/reports/daily-{as_of_str}.md",
-                    "daily_report_text": daily_text,
-                    "daily_report_sha256": sha256_text(daily_text),
-                },
-                "candidates_add": {
-                    "lines": cand_lines,
-                    "n_user": len(mech.candidates),
-                    "limit": ext.candidates_pending,
-                    "expected_pairs": expected_cand_pairs,
-                },
-                "corrections": corr_lines,
-                "append_targets": build_append_targets_manifest(cand_manifest, cortex_res),
-                "status_archive": [
-                    {
-                        "domain": r.domain,
-                        "topic": r.topic,
-                        "summary": r.summary,
-                        "verified": r.verified.isoformat() if r.verified else None,
-                        "src": list(r.src),
-                    }
-                    for r in archived_status
-                ],
-                "advance_ids": advance_ids,
-                "closing": build_closing_plan(
-                    inst_cfg,
-                    as_of_date,
-                    mech.rest,
-                    brain_mode="daily",
-                    resurface=bool(bcfg.enabled and bcfg.resurface_enabled),
-                    commit_msg=f"digest {as_of_str}",
-                    ledger_job="digest",
-                ),
-            }
-            closing_res = checkpoint.execute_commit_plan(inst_cfg, plan)
             for k in ("brain_daily", "brain", "brain_resurface"):
                 if k in closing_res:
                     summary[k] = closing_res[k]

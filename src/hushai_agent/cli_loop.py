@@ -8,6 +8,7 @@ from typing import Any
 
 from hushai_agent import clock, digest, ledger, weekly
 from hushai_agent.config import load_instance_config
+from hushai_agent.digest_plan import resolve_default_digest_dates
 from hushai_agent.todo import get_today_status, run_todo_action
 
 
@@ -46,14 +47,16 @@ def register_loop_commands(subparsers: Any) -> None:
         default=None,
         help="今日待办目标日期 YYYY-MM-DD（默认基准日加一天）",
     )
-    p_digest.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run）")
+    p_digest.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run，默认不调真实模型）")
+    p_digest.add_argument("--with-model", action="store_true", help="演练模式也强制真实调用大模型")
     p_digest.add_argument("--json", action="store_true", help="以 JSON 格式输出摘要")
 
     # 5. weekly
     p_weekly = subparsers.add_parser("weekly", help="执行每周洞察重写与审计周报生成")
     p_weekly.add_argument("--instance", required=True, help="实例名称")
     p_weekly.add_argument("--date", default=None, help="基准日期 YYYY-MM-DD（默认当日）")
-    p_weekly.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run）")
+    p_weekly.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run，默认不调真实模型）")
+    p_weekly.add_argument("--with-model", action="store_true", help="演练模式也强制真实调用大模型")
     p_weekly.add_argument("--json", action="store_true", help="以 JSON 格式输出摘要")
 
     # 6. reconcile
@@ -124,21 +127,27 @@ def dispatch_loop_command(args: argparse.Namespace) -> int | None:
 
     if args.command == "digest":
         cfg = load_instance_config(args.instance)
-        as_of = args.date.strip() if args.date and args.date.strip() else clock.today(cfg)
-        for_date = (
-            args.for_date.strip()
-            if getattr(args, "for_date", None) and args.for_date.strip()
-            else None
+        as_of, for_date = resolve_default_digest_dates(
+            cfg, args.date, getattr(args, "for_date", None)
         )
         summary = digest.run_digest(
-            cfg, as_of=as_of, dry_run=bool(args.dry_run), for_date=for_date
+            cfg,
+            as_of=as_of,
+            dry_run=bool(args.dry_run),
+            for_date=for_date,
+            with_model=bool(getattr(args, "with_model", False)),
         )
         return _print_digest_summary(summary, as_json=bool(args.json))
 
     if args.command == "weekly":
         cfg = load_instance_config(args.instance)
         as_of = args.date.strip() if args.date and args.date.strip() else clock.today(cfg)
-        summary = weekly.run_weekly(cfg, as_of=as_of, dry_run=bool(args.dry_run))
+        summary = weekly.run_weekly(
+            cfg,
+            as_of=as_of,
+            dry_run=bool(args.dry_run),
+            with_model=bool(getattr(args, "with_model", False)),
+        )
         return _print_weekly_summary(summary, as_json=bool(args.json))
 
     if args.command == "reconcile":

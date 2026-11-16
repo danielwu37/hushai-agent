@@ -92,6 +92,8 @@ class TestMuseGateMigration(unittest.TestCase):
             f"read_roots = 10-工作/workos={self.workos}, 30-家庭/eduos={self.eduos}\n"
             f"private_paths_file = {priv}\n"
             "private_paths_scope = 10-工作/workos\n"
+            "legacy_prefix_map = 00-我=hub,00-我/收件=hub/inbox,00-我/今日待办.md=hub/today.md,00-我/近况-索引.md=hub/status-index.md\n"
+            "legacy_fallback = hub/inbox=hub/reports/legacy-00-我/收件\n"
             f"log_file = {self.base / 'gate.log'}\n"
         )
         cfg_file.write_text(txt, encoding="utf-8")
@@ -145,7 +147,7 @@ class TestMuseGateMigration(unittest.TestCase):
         cfg_file = self.base / "config" / "demo" / "config.ini"
         txt = cfg_file.read_text(encoding="utf-8").replace(
             f"30-家庭/eduos={self.eduos}", f"30-家庭/eduos={self.eduos}, music={music}"
-        ) + "write_allow = hub/exchange/in/, music/Playlists/_输入清单/待下载/\n"
+        ) + "write_allow = hub/exchange/in/, music/Playlists/_输入清单/待下载/\ntxt_only_dirs = music/Playlists/_输入清单/待下载/\n"
         cfg_file.write_text(txt, encoding="utf-8")
         self.cfg = load_instance_config("demo")
         self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/a.txt", b"song\n")[1], 0)
@@ -153,8 +155,10 @@ class TestMuseGateMigration(unittest.TestCase):
         self.assertEqual(self._ssh("put music/Playlists/_输入清单/待下载/sub/a.txt", b"x\n")[1], 2)
 
     def test_latest_daily_maps_to_morning_brief(self) -> None:
-        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/最新.md"), "hub/reports/morning-brief.md")
-        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/2026-11.md"), "hub/reports/2026-11.md")
+        pmap = {"00-我/日报/最新.md": "hub/reports/morning-brief.md", "00-我/日报/": "hub/reports/"}
+        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/最新.md", pmap), "hub/reports/morning-brief.md")
+        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/2026-11.md", pmap), "hub/reports/2026-11.md")
+        self.assertEqual(gate_muse.map_legacy_path("00-我/日报/最新.md"), "00-我/日报/最新.md")
 
     def test_explain_segments(self) -> None:
         self.assertIn("4 段", gate_muse.explain_line("- 09:00｜工作｜事｜待办：无"))
@@ -174,7 +178,7 @@ class TestCaptureDomain(unittest.TestCase):
                 res = capture.run_capture("demo", "steward", f'{{"session_id":"s1","transcript_path":"{tr}"}}')
                 self.assertTrue(res.get("written"), res)
                 cfg = load_instance_config("demo")
-                expect = "音乐" if "音乐" in cfg.domains else cfg.domains[0]
+                expect = "音乐" if "音乐" in cfg.domains else ("生活" if "生活" in cfg.domains else cfg.domains[0])
                 self.assertEqual(res["domain"], expect)
 
 

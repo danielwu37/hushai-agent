@@ -171,3 +171,64 @@ def check_sync_ok(
         "suggestion": f"人工检查 rclone 配置与远端 {ext.sync_remote} 授权",
         "tries": 2,
     }
+
+
+def digest_catchup_dates(
+    cfg: InstanceConfig,
+    now_dt: datetime.datetime,
+) -> tuple[datetime.date, datetime.date]:
+    """根据配置的 digest_time 判断补跑应针对昨天还是今天，返回 (as_of_date, for_date)。"""
+    from hushai_agent.install import detect_existing_digest_time
+
+    d_time = detect_existing_digest_time(cfg)
+    dh, dm = (int(x) for x in d_time.split(":", 1))
+    today_sched = now_dt.replace(hour=dh, minute=dm, second=0, microsecond=0)
+    today_d = now_dt.date()
+    if now_dt < today_sched:
+        return today_d - datetime.timedelta(days=1), today_d
+    return today_d, today_d + datetime.timedelta(days=1)
+
+
+def last_weekly_schedule_date(cfg: InstanceConfig, now_dt: datetime.datetime) -> datetime.date:
+    """返回截至 now_dt 最近一次应跑周报的预定日期（默认周日 digest_time+45m）。"""
+    from hushai_agent.install import _weekly_time, detect_existing_digest_time
+
+    w_time = _weekly_time(detect_existing_digest_time(cfg))
+    wh, wm = (int(x) for x in w_time.split(":", 1))
+    target_weekday = 6  # Sunday
+    days_back = (now_dt.weekday() - target_weekday) % 7
+    cand_date = now_dt.date() - datetime.timedelta(days=days_back)
+    cand_dt = now_dt.replace(year=cand_date.year, month=cand_date.month, day=cand_date.day, hour=wh, minute=wm, second=0, microsecond=0)
+    if cand_dt > now_dt:
+        cand_date -= datetime.timedelta(days=7)
+    return cand_date
+
+
+def weekly_ran_in_cycle(
+    cfg: InstanceConfig,
+    sched_date: datetime.date,
+    parsed_rows: list[tuple[dict[str, Any], datetime.datetime | None]],
+    now_date: datetime.date,
+) -> bool:
+    """判断预定周日周期（同 ISO 周或已在预定日后运行）是否已有成功/降级周报，防止跨周补跑重出。"""
+    target_iso = sched_date.isocalendar()[:2]
+    reports_dir = cfg.vault / "hub" / "reports"
+    if reports_dir.is_dir():
+        for p in reports_dir.glob("weekly-*.md"):
+            stem_d = p.stem[len("weekly-") :]
+            try:
+                rep_d = datetime.date.fromisoformat(stem_d)
+            except ValueError:
+                continue
+            if rep_d.isocalendar()[:2] == target_iso or sched_date <= rep_d <= now_date:
+                return True
+    for r, _ in parsed_rows:
+        if r.get("kind") == "job" and r.get("job") == "weekly" and r.get("result") in ("ok", "degraded") and not r.get("dry_run"):
+            raw_d = str(r.get("date") or "").strip()
+            try:
+                rd = datetime.date.fromisoformat(raw_d)
+            except ValueError:
+                continue
+            if rd.isocalendar()[:2] == target_iso or sched_date <= rd <= now_date:
+                return True
+    return False

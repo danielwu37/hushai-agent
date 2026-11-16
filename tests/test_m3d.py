@@ -142,7 +142,9 @@ class TestM3d(unittest.TestCase):
         self.assertEqual(agy_hooks["hushai"]["SessionStart"][0]["type"], "command")
         self.assertEqual(agy_hooks["hushai"]["Stop"][0]["type"], "command")
         agy_settings = json.loads((kit_dir / "agy-settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(agy_settings, {"trustedWorkspaces": [str(self.vault.resolve())]})
+        self.assertEqual(agy_settings["trustedWorkspaces"], [str(self.vault.resolve())])
+        self.assertTrue(set(doorkit.AGY_DENY_RULES).issubset(set(agy_settings["permissions"]["deny"])))
+        self.assertTrue(set(doorkit.AGY_ASK_RULES).issubset(set(agy_settings["permissions"]["ask"])))
         self.assertNotIn("hooks", agy_settings)
 
         wiz_vault = self.base / "wiz-vault"

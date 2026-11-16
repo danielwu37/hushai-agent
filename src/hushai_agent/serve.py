@@ -187,10 +187,13 @@ class Handler(BaseHTTPRequestHandler):
     def _safe(self) -> None:
         try:
             self._route()
-        except Exception:
+        except Exception as exc:
+            import sys
+
+            sys.stderr.write(f"hushai serve request error: {exc}\n")
             try:
                 self._send(500)
-            except Exception:
+            except OSError:
                 pass
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _safe
@@ -203,8 +206,10 @@ class Handler(BaseHTTPRequestHandler):
             status = args[1] if len(args) > 1 else ""
             line = f"{clock.now(self.server.cfg).isoformat(timespec='seconds')} {self.command} {path} {status}"
             append_line(state_dir / "serve.log", line.replace("\n", " ").replace("\r", " "), [state_dir])
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+
+            sys.stderr.write(f"hushai serve log error: {exc}\n")
 
 
 def make_server(cfg: InstanceConfig, port: int) -> ThreadingHTTPServer:

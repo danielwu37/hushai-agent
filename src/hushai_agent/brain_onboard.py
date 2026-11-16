@@ -18,15 +18,24 @@ from hushai_agent.brain_model import (
 )
 from hushai_agent.brain_process import process_inbox_to_brain, process_raw_items
 from hushai_agent.config import InstanceConfig
+from hushai_agent.digest_apply import commit_hub_if_git
 from hushai_agent.fsio import read_for_prompt
 
 ONBOARD_QUESTIONS: tuple[tuple[str, str], ...] = (
-    ("work", "1/5 你平时主要做什么工作或项目？"),
-    ("remember", "2/5 你最想更好地记住哪类信息？"),
-    ("notes_location", "3/5 你现在的笔记主要保存在哪里？"),
-    ("reading_watching", "4/5 你平时主要读/看什么内容（文章、视频、书籍、帖子等）？"),
-    ("answer_style", "5/5 你喜欢什么样的回答风格（简短要点、带原句引用还是详细展开）？"),
+    ("work", "1/5 你平时主要做什么工作或项目？[回车跳过]"),
+    ("remember", "2/5 你最想更好地记住哪类信息？[回车跳过]"),
+    ("notes_location", "3/5 你现在的笔记主要保存在哪里？[回车跳过]"),
+    ("reading_watching", "4/5 你平时主要读/看什么内容（文章、视频、书籍、帖子等）？[回车跳过]"),
+    ("answer_style", "5/5 你喜欢什么样的回答风格（简短要点、带原句引用还是详细展开）？[回车跳过]"),
 )
+
+
+def _sanitize_onboard_answer(raw: str) -> str:
+    """校验引导回答：拒绝纯数字（如误触 '0' 或菜单项残留），空或无效返回 '未填写'。"""
+    cleaned = sanitize_single_line(raw)
+    if not cleaned or cleaned.isdigit():
+        return "未填写"
+    return cleaned
 
 MAX_INITIAL_ITEMS = 10
 RETURNING_GREETING = "第二大脑已就绪（跳过首次引导），请直接记录新内容或使用 `hushai brain ask` 提问。"
@@ -107,11 +116,11 @@ def run_onboard(
 
     for key, question in ONBOARD_QUESTIONS:
         if key in provided and sanitize_single_line(provided[key]):
-            collected[key] = sanitize_single_line(provided[key])
+            collected[key] = _sanitize_onboard_answer(provided[key])
         elif interactive and (prompt_fn is not None or sys.stdin.isatty()):
-            collected[key] = sanitize_single_line(ask_fn(question), "未填写")
+            collected[key] = _sanitize_onboard_answer(ask_fn(question))
         else:
-            collected[key] = sanitize_single_line(provided.get(key, ""), "未填写")
+            collected[key] = _sanitize_onboard_answer(provided.get(key, ""))
 
     now_dt = clock.now(cfg)
     date_str = (
@@ -135,14 +144,15 @@ def run_onboard(
         ]
         processed_summary = process_raw_items(cfg, raw_objs, as_of_date=date_str)
     else:
-        # 也检查是否已有未加工收件，最多处理前 10 条
-        inbox_res = process_inbox_to_brain(cfg, as_of_date=date_str)
+        # 检查是否已有未加工收件，冷启动严格限制最多前 MAX_INITIAL_ITEMS (10) 条
+        inbox_res = process_inbox_to_brain(cfg, as_of_date=date_str, max_items=MAX_INITIAL_ITEMS)
         processed_summary = inbox_res
 
     output_text = render_heres_your_brain(cfg, max_notes=5)
     state = load_brain_state(cfg)
     state["initial_setup_shown"] = True
     save_brain_state(cfg, state)
+    commit_hub_if_git(cfg.vault, f"brain-onboard {date_str}")
 
     return {
         "skipped": False,

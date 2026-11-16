@@ -1,23 +1,31 @@
-"""纯文件型 Outbox（<state>/outbox/）：pending/sending/sent/failed 状态机、恢复、指数退避、去重与归档。
-
-投递语义（明确声明）：本模块提供 **at-least-once（至少一次）** 投递保证——若进程在外部投递已生效后、
-`sending -> sent` 原子迁移前崩溃，恢复器会回收 `sending` 信封并在下次 flush 时重新投递；绝不宣称
-外部消息恰好送达一次（exactly-once）。
-"""
+"""纯文件型 Outbox（<state>/outbox/）：handlers、dedupe 索引维护、enqueue 与 flush 入口。"""
 
 from __future__ import annotations
 
 import datetime
-import json
 import uuid
-from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from hushai_agent import clock, ledger, lock
+from hushai_agent import lock
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.fsio import atomic_write
 from hushai_agent.inboxscan import iter_inbox_lines
+from hushai_agent.outbox_ops import (  # noqa: F401
+    DEFAULT_ARCHIVE_RETAIN_DAYS,
+    DEFAULT_BASE_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    _now_dt,
+    _shift_seconds,
+    _utc,
+    archive_old,
+    flush_outbox as flush,
+    list_envelopes,
+    mark_acked_by_rel_paths,
+    recover_stale_sending,
+    retry_failed,
+)
 from hushai_agent.outbox_store import (
     DELIVERY_SEMANTICS,
     OUTBOX_LOCK_NAME,
@@ -26,25 +34,15 @@ from hushai_agent.outbox_store import (
     has_active_envelope,
     iso_to_utc_ts,
     iter_all_envelope_files,
-    load_dedupe,
     load_dedupe_status,
     load_envelope,
-    outbox_dir,
     parse_iso,
-    quarantine_corrupt,
     reconcile_duplicate_files,
     save_dedupe,
     state_subdir,
-    transition_envelope,
     write_envelope,
 )
-from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.vault import add_inbox_entry
-
-DEFAULT_MAX_ATTEMPTS = 5
-DEFAULT_BASE_BACKOFF_SECONDS = 30
-DEFAULT_MAX_BACKOFF_SECONDS = 3600
-DEFAULT_ARCHIVE_RETAIN_DAYS = 30
 
 HandlerFn = Callable[[InstanceConfig, dict[str, Any]], tuple[bool, str]]
 
@@ -54,27 +52,6 @@ def _stage_hook(stage: str) -> None:
     _ = stage
 
 
-def _utc(dt: datetime.datetime) -> datetime.datetime:
-    return dt.astimezone(datetime.timezone.utc)
-
-
-def _shift_seconds(dt: datetime.datetime, seconds: int | float, tz: ZoneInfo) -> datetime.datetime:
-    # 经由 UTC 瞬时做时间偏移，避免 DST 跨界时 aware + timedelta 按墙钟偏移出错
-    return (_utc(dt) + datetime.timedelta(seconds=seconds)).astimezone(tz)
-
-
-def _now_dt(cfg: InstanceConfig, now: datetime.datetime | str | None = None) -> datetime.datetime:
-    tz = ZoneInfo(cfg.timezone)
-    if now is None:
-        return clock.now(cfg)
-    if isinstance(now, str):
-        parsed = parse_iso(now, tz)
-        if parsed is None:
-            raise ValueError(f"非法时间格式: {now!r}")
-        return parsed
-    return now.replace(tzinfo=tz) if now.tzinfo is None else now.astimezone(tz)
-
-
 def _deliver_exchange_out(cfg: InstanceConfig, env: dict[str, Any]) -> tuple[bool, str]:
     payload = env.get("payload") or {}
     rel = str(payload.get("rel_path") or "").strip()
@@ -82,7 +59,6 @@ def _deliver_exchange_out(cfg: InstanceConfig, env: dict[str, Any]) -> tuple[boo
     if not rel:
         return False, "missing payload.rel_path"
     atomic_write(cfg.vault / rel, content, [cfg.vault])
-
     receipt = payload.get("receipt")
     if isinstance(receipt, dict):
         steward_door = str(receipt.get("steward_door") or cfg.steward_door)
@@ -94,13 +70,21 @@ def _deliver_exchange_out(cfg: InstanceConfig, env: dict[str, Any]) -> tuple[boo
 
 
 def _deliver_today_alert(cfg: InstanceConfig, env: dict[str, Any]) -> tuple[bool, str]:
-    from hushai_agent.heal import _prepend_today_alert
+    from hushai_agent import alerts
 
     payload = env.get("payload") or {}
     alert_line = str(payload.get("alert_line") or "").strip()
     if not alert_line:
         return False, "missing payload.alert_line"
-    _prepend_today_alert(cfg, alert_line)
+    msg = alert_line[5:].strip() if alert_line.startswith("- 系统：") else alert_line
+    alerts.record_alert(
+        cfg,
+        kind=str(payload.get("kind") or "system_alert"),
+        level=str(payload.get("level") or "needs_human"),
+        message=msg,
+        suggestion=str(payload.get("suggestion") or ""),
+        source=str(payload.get("problem_key") or "outbox"),
+    )
     return True, alert_line
 
 
@@ -111,7 +95,6 @@ DEFAULT_HANDLERS: dict[str, HandlerFn] = {
 
 
 def has_pending_or_sending(cfg: InstanceConfig | str) -> bool:
-    """快速判断 outbox 是否存在待投递或待恢复信封（无锁只读检查）。"""
     for st in ("pending", "sending"):
         sdir = state_subdir(cfg, st)
         if sdir.is_dir() and any(p.is_file() and p.suffix == ".json" for p in sdir.iterdir()):
@@ -120,28 +103,16 @@ def has_pending_or_sending(cfg: InstanceConfig | str) -> bool:
 
 
 def _find_latest_by_dedupe_key(cfg: InstanceConfig, dedupe_key: str) -> tuple[str, dict[str, Any]] | None:
-    matches: list[tuple[str, dict[str, Any]]] = []
-    for st, p in iter_all_envelope_files(cfg):
-        env = load_envelope(p)
-        if env and str(env.get("dedupe_key") or "") == dedupe_key:
-            matches.append((st, env))
+    matches = [(st, env) for st, p in iter_all_envelope_files(cfg) if (env := load_envelope(p)) and str(env.get("dedupe_key") or "") == dedupe_key]
     if not matches:
         return None
-    return max(
-        matches,
-        key=lambda item: (
-            iso_to_utc_ts(item[1].get("created_at")),
-            int(item[1].get("transition_seq") or 0),
-            str(item[1].get("message_id") or ""),
-        ),
-    )
+    return max(matches, key=lambda item: (iso_to_utc_ts(item[1].get("created_at")), int(item[1].get("transition_seq") or 0), str(item[1].get("message_id") or "")))
 
 
 def _envelope_state_anywhere(cfg: InstanceConfig, message_id: str) -> str | None:
     if not message_id:
         return None
-    active = has_active_envelope(cfg, message_id)
-    if active is not None:
+    if (active := has_active_envelope(cfg, message_id)) is not None:
         return active
     for st, p in iter_all_envelope_files(cfg):
         if st == "archive" and p.stem == message_id:
@@ -149,15 +120,8 @@ def _envelope_state_anywhere(cfg: InstanceConfig, message_id: str) -> str | None
     return None
 
 
-def _update_dedupe_entry(
-    dedupe: dict[str, dict[str, Any]],
-    env: dict[str, Any],
-    now_iso: str,
-    *,
-    dir_state: str | None = None,
-) -> None:
-    dkey = str(env.get("dedupe_key") or "")
-    if not dkey:
+def _update_dedupe_entry(dedupe: dict[str, dict[str, Any]], env: dict[str, Any], now_iso: str, *, dir_state: str | None = None) -> None:
+    if not (dkey := str(env.get("dedupe_key") or "")):
         return
     prev = dedupe.get(dkey) or {}
     dedupe[dkey] = {
@@ -171,24 +135,15 @@ def _update_dedupe_entry(
 
 
 def _rebuild_dedupe_from_disk(cfg: InstanceConfig, now_iso: str) -> dict[str, dict[str, Any]]:
-    """从活跃目录与 archive/ 重建 dedupe 索引（同一 dedupe_key 保留最新信封）。"""
     best_by_key: dict[str, tuple[tuple[float, int, str], str, dict[str, Any]]] = {}
     for st, p in iter_all_envelope_files(cfg):
-        env = load_envelope(p)
-        if env is None:
+        if (env := load_envelope(p)) is None:
             continue
-        dkey = str(env.get("dedupe_key") or "").strip()
-        if not dkey:
+        if not (dkey := str(env.get("dedupe_key") or "").strip()):
             continue
-        rank = (
-            iso_to_utc_ts(env.get("created_at")),
-            int(env.get("transition_seq") or 0),
-            str(env.get("message_id") or ""),
-        )
-        prev = best_by_key.get(dkey)
-        if prev is None or rank > prev[0]:
+        rank = (iso_to_utc_ts(env.get("created_at")), int(env.get("transition_seq") or 0), str(env.get("message_id") or ""))
+        if dkey not in best_by_key or rank > best_by_key[dkey][0]:
             best_by_key[dkey] = (rank, st, env)
-
     rebuilt: dict[str, dict[str, Any]] = {}
     for dkey in sorted(best_by_key):
         _, st, env = best_by_key[dkey]
@@ -196,11 +151,7 @@ def _rebuild_dedupe_from_disk(cfg: InstanceConfig, now_iso: str) -> dict[str, di
     return rebuilt
 
 
-def _load_dedupe_with_heal_locked(
-    cfg: InstanceConfig,
-    now_iso: str,
-) -> tuple[dict[str, dict[str, Any]], str, bool]:
-    """加载 dedupe 索引；仅当索引损坏或有信封却丢失索引时自动重建并写盘。"""
+def _load_dedupe_with_heal_locked(cfg: InstanceConfig, now_iso: str) -> tuple[dict[str, dict[str, Any]], str, bool]:
     dedupe, status = load_dedupe_status(cfg)
     if status == "ok":
         return dedupe, "ok", False
@@ -209,8 +160,7 @@ def _load_dedupe_with_heal_locked(
         return {}, "uninitialized", False
     rebuilt = _rebuild_dedupe_from_disk(cfg, now_iso)
     save_dedupe(cfg, rebuilt)
-    health = "corrupt" if status == "corrupt" else "missing_with_envelopes"
-    return rebuilt, health, True
+    return rebuilt, ("corrupt" if status == "corrupt" else "missing_with_envelopes"), True
 
 
 def enqueue(
@@ -229,10 +179,8 @@ def enqueue(
 ) -> dict[str, Any]:
     """按幂等键去重后入队到 <state>/outbox/pending/（或 immediate_sent 记入 sent/）。"""
     inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    dkey = str(dedupe_key or "").strip()
-    if not dkey:
+    if not (dkey := str(dedupe_key or "").strip()):
         raise ValueError("outbox.enqueue 需要非空 dedupe_key")
-
     tz = ZoneInfo(inst_cfg.timezone)
     now_dt = _now_dt(inst_cfg, now)
     now_iso = now_dt.isoformat()
@@ -242,461 +190,32 @@ def enqueue(
         ensure_layout(inst_cfg)
         reconcile_duplicate_files(inst_cfg)
         dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
-        existing = dedupe.get(dkey)
-        if existing:
+        if existing := dedupe.get(dkey):
             exp_dt = parse_iso(existing.get("expires_at"), tz)
             loc_state = _envelope_state_anywhere(inst_cfg, str(existing.get("message_id") or ""))
-            # 若设了冷却窗口且已过期，则允许重新入队；否则在有效冷却或永久去重（含已归档）下跳过
             in_cooldown = exp_dt is not None and _utc(now_dt) < _utc(exp_dt)
-            known_state = loc_state or (
-                existing.get("status") if existing.get("status") in (*OUTBOX_STATES, "archive") else None
-            )
-            permanent_dup = existing.get("expires_at") is None and known_state is not None
-            if in_cooldown or permanent_dup:
-                return {
-                    "queued": False,
-                    "deduplicated": True,
-                    "message_id": existing.get("message_id"),
-                    "status": loc_state or existing.get("status"),
-                    "delivery_semantics": DELIVERY_SEMANTICS,
-                    "dedupe_health": dedupe_health,
-                    "dedupe_rebuilt": dedupe_rebuilt,
-                }
-        disk_hit = _find_latest_by_dedupe_key(inst_cfg, dkey)
-        if disk_hit is not None:
+            known_state = loc_state or (existing.get("status") if existing.get("status") in (*OUTBOX_STATES, "archive") else None)
+            if in_cooldown or (existing.get("expires_at") is None and known_state is not None):
+                return {"queued": False, "deduplicated": True, "message_id": existing.get("message_id"), "status": loc_state or existing.get("status"), "delivery_semantics": DELIVERY_SEMANTICS, "dedupe_health": dedupe_health, "dedupe_rebuilt": dedupe_rebuilt}
+        if (disk_hit := _find_latest_by_dedupe_key(inst_cfg, dkey)) is not None:
             st, env = disk_hit
             exp_dt = parse_iso(env.get("dedupe_expires_at"), tz)
             if exp_dt is None or _utc(now_dt) < _utc(exp_dt):
                 _update_dedupe_entry(dedupe, env, now_iso, dir_state=st)
                 save_dedupe(inst_cfg, dedupe)
-                return {
-                    "queued": False,
-                    "deduplicated": True,
-                    "message_id": env["message_id"],
-                    "status": st,
-                    "delivery_semantics": DELIVERY_SEMANTICS,
-                    "dedupe_health": dedupe_health,
-                    "dedupe_rebuilt": dedupe_rebuilt,
-                }
+                return {"queued": False, "deduplicated": True, "message_id": env["message_id"], "status": st, "delivery_semantics": DELIVERY_SEMANTICS, "dedupe_health": dedupe_health, "dedupe_rebuilt": dedupe_rebuilt}
 
         msg_id = f"OB-{now_dt.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         status = "sent" if immediate_sent else "pending"
-        env: dict[str, Any] = {
-            "version": 1,
-            "transition_seq": 1,
-            "message_id": msg_id,
-            "dedupe_key": dkey,
-            "dedupe_expires_at": expires_at,
-            "channel": str(channel),
-            "target": str(target),
-            "payload": dict(payload),
-            "delivery_semantics": DELIVERY_SEMANTICS,
-            "status": status,
-            "created_at": now_iso,
-            "updated_at": now_iso,
-            "attempts": 1 if immediate_sent else 0,
-            "max_attempts": max(1, int(max_attempts)),
-            "base_backoff_seconds": max(1, int(base_backoff_seconds)),
-            "max_backoff_seconds": max(1, int(max_backoff_seconds)),
-            "next_retry_at": now_iso,
-            "sending_started_at": None,
-            "sent_at": now_iso if immediate_sent else None,
-            "last_error": "",
+        env = {
+            "version": 1, "transition_seq": 1, "message_id": msg_id, "dedupe_key": dkey, "dedupe_expires_at": expires_at,
+            "channel": str(channel), "target": str(target), "payload": dict(payload), "delivery_semantics": DELIVERY_SEMANTICS,
+            "status": status, "created_at": now_iso, "updated_at": now_iso, "attempts": 1 if immediate_sent else 0,
+            "max_attempts": max(1, int(max_attempts)), "base_backoff_seconds": max(1, int(base_backoff_seconds)),
+            "max_backoff_seconds": max(1, int(max_backoff_seconds)), "next_retry_at": now_iso, "sending_started_at": None,
+            "sent_at": now_iso if immediate_sent else None, "last_error": "",
         }
         write_envelope(inst_cfg, status, env)
         _update_dedupe_entry(dedupe, env, now_iso)
         save_dedupe(inst_cfg, dedupe)
-        return {
-            "queued": True,
-            "deduplicated": False,
-            "message_id": msg_id,
-            "status": status,
-            "delivery_semantics": DELIVERY_SEMANTICS,
-            "dedupe_health": dedupe_health,
-            "dedupe_rebuilt": dedupe_rebuilt,
-        }
-
-
-def mark_acked_by_rel_paths(cfg: InstanceConfig | str, door: str, rel_paths: list[str]) -> int:
-    """配合 gate check-inbox --ack，将已发送至对应端的 exchange_out 信封标注 acked_at。"""
-    if not rel_paths:
-        return 0
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    targets = set(rel_paths)
-    acked = 0
-    now_iso = clock.now(inst_cfg).isoformat()
-    with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
-        reconcile_duplicate_files(inst_cfg)
-        sent_dir = state_subdir(inst_cfg, "sent")
-        if not sent_dir.is_dir():
-            return 0
-        for p in sorted(sent_dir.glob("*.json")):
-            if p.name.startswith("corrupt-"):
-                continue
-            env = load_envelope(p)
-            if not env or env.get("channel") != "exchange_out" or env.get("target") != door:
-                continue
-            rel = str((env.get("payload") or {}).get("rel_path") or "")
-            if rel in targets and not env.get("acked_at"):
-                env["acked_at"] = now_iso
-                env["updated_at"] = now_iso
-                env["transition_seq"] = max(1, int(env.get("transition_seq") or 0)) + 1
-                write_envelope(inst_cfg, "sent", env)
-                acked += 1
-    return acked
-
-
-def _recover_stale_sending_locked(
-    cfg: InstanceConfig,
-    now_dt: datetime.datetime,
-    stale_seconds: int | None = None,
-) -> dict[str, Any]:
-    tz = ZoneInfo(cfg.timezone)
-    now_iso = now_dt.isoformat()
-    dedupe_cleaned = reconcile_duplicate_files(cfg)
-    dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(cfg, now_iso)
-    sdir = state_subdir(cfg, "sending")
-    recovered = failed = corrupted = 0
-    if not sdir.is_dir():
-        return {
-            "recovered": 0,
-            "failed": 0,
-            "corrupted": 0,
-            "dedupe_cleaned": dedupe_cleaned,
-            "dedupe_health": dedupe_health,
-            "dedupe_rebuilt": dedupe_rebuilt,
-        }
-
-    changed_dedupe = False
-    for p in sorted(sdir.glob("*.json")):
-        if p.name.startswith("corrupt-"):
-            continue
-        env = load_envelope(p)
-        if env is None:
-            quarantine_corrupt(cfg, p, "invalid sending envelope json")
-            corrupted += 1
-            continue
-        if stale_seconds is not None:
-            started_dt = parse_iso(env.get("sending_started_at") or env.get("updated_at"), tz)
-            if started_dt is not None and (_utc(now_dt) - _utc(started_dt)).total_seconds() < stale_seconds:
-                continue
-        attempts = int(env.get("attempts") or 0)
-        max_attempts = int(env.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
-        env["sending_started_at"] = None
-        env["updated_at"] = now_iso
-        if attempts >= max_attempts:
-            env["status"] = "failed"
-            env["last_error"] = "crash-recovery-max-attempts"
-            transition_envelope(cfg, "sending", "failed", env, on_after_write=_stage_hook)
-            failed += 1
-        else:
-            env["status"] = "pending"
-            env["next_retry_at"] = now_iso
-            env["last_error"] = "reclaimed-after-sending-crash"
-            transition_envelope(cfg, "sending", "pending", env, on_after_write=_stage_hook)
-            recovered += 1
-        _update_dedupe_entry(dedupe, env, now_iso)
-        changed_dedupe = True
-
-    if changed_dedupe:
-        save_dedupe(cfg, dedupe)
-    return {
-        "recovered": recovered,
-        "failed": failed,
-        "corrupted": corrupted,
-        "dedupe_cleaned": dedupe_cleaned,
-        "dedupe_health": dedupe_health,
-        "dedupe_rebuilt": dedupe_rebuilt,
-    }
-
-
-def recover_stale_sending(
-    cfg: InstanceConfig | str,
-    stale_seconds: int | None = None,
-    now: datetime.datetime | str | None = None,
-) -> dict[str, Any]:
-    """在持有 outbox.lock 下回收中断遗留在 sending/ 的信封（明确 at-least-once 重投）。"""
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    now_dt = _now_dt(inst_cfg, now)
-    with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
-        ensure_layout(inst_cfg)
-        res = _recover_stale_sending_locked(inst_cfg, now_dt, stale_seconds=stale_seconds)
-    res["delivery_semantics"] = DELIVERY_SEMANTICS
-    return res
-
-
-def flush(
-    cfg: InstanceConfig | str,
-    *,
-    handlers: dict[str, HandlerFn] | None = None,
-    now: datetime.datetime | str | None = None,
-    channel_filter: str | None = None,
-    stale_seconds: int | None = None,
-    limit: int = 50,
-) -> dict[str, Any]:
-    """执行一轮无常驻拉起投递：先回收孤儿 sending，再按退避窗口逐封投递到期 pending 信封。"""
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    now_dt = _now_dt(inst_cfg, now)
-    tz = ZoneInfo(inst_cfg.timezone)
-    reg: dict[str, HandlerFn] = dict(DEFAULT_HANDLERS)
-    if handlers:
-        reg.update(handlers)
-
-    sent = failed = retried = deferred_backoff = corrupted = 0
-    rec_info: dict[str, Any] = {
-        "recovered": 0,
-        "failed": 0,
-        "corrupted": 0,
-        "dedupe_cleaned": 0,
-        "dedupe_health": "uninitialized",
-        "dedupe_rebuilt": False,
-    }
-
-    with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
-        ensure_layout(inst_cfg)
-        rec_info = _recover_stale_sending_locked(inst_cfg, now_dt, stale_seconds=stale_seconds)
-        corrupted += rec_info["corrupted"]
-        failed += rec_info["failed"]
-
-        pending_dir = state_subdir(inst_cfg, "pending")
-        candidates_list: list[tuple[float, str, Path, dict[str, Any]]] = []
-        for p in sorted(pending_dir.glob("*.json")):
-            if p.name.startswith("corrupt-"):
-                continue
-            env = load_envelope(p)
-            if env is None:
-                quarantine_corrupt(inst_cfg, p, "invalid pending envelope json")
-                corrupted += 1
-                continue
-            candidates_list.append((iso_to_utc_ts(env.get("created_at")), str(env["message_id"]), p, env))
-        candidates_list.sort(key=lambda x: (x[0], x[1]))
-
-        dedupe = load_dedupe(inst_cfg)
-        processed = 0
-        for _, _, _, env in candidates_list:
-            if processed >= limit:
-                break
-            if channel_filter and env.get("channel") != channel_filter:
-                continue
-            next_dt = parse_iso(env.get("next_retry_at"), tz)
-            if next_dt is not None and _utc(next_dt) > _utc(now_dt):
-                deferred_backoff += 1
-                continue
-
-            processed += 1
-            now_iso = _now_dt(inst_cfg, now).isoformat()
-            attempts = int(env.get("attempts") or 0) + 1
-            env["attempts"] = attempts
-            env["status"] = "sending"
-            env["sending_started_at"] = now_iso
-            env["updated_at"] = now_iso
-            transition_envelope(inst_cfg, "pending", "sending", env, on_after_write=_stage_hook)
-            _update_dedupe_entry(dedupe, env, now_iso)
-            save_dedupe(inst_cfg, dedupe)
-            _stage_hook("after_write_sending")
-
-            handler = reg.get(str(env["channel"]))
-            if handler is None:
-                ok, detail = False, f"unsupported channel: {env['channel']}"
-            else:
-                try:
-                    ok, detail = handler(inst_cfg, env)
-                except Exception as exc:  # noqa: BLE001
-                    ok, detail = False, f"exception: {exc}"
-
-            end_dt = _now_dt(inst_cfg, now)
-            end_iso = end_dt.isoformat()
-            env["sending_started_at"] = None
-            env["updated_at"] = end_iso
-            if ok:
-                _stage_hook("after_external_send_before_sent")
-                env["status"] = "sent"
-                env["sent_at"] = end_iso
-                env["last_error"] = ""
-                transition_envelope(inst_cfg, "sending", "sent", env, on_after_write=_stage_hook)
-                sent += 1
-            else:
-                env["last_error"] = str(detail)[:500]
-                max_attempts = int(env.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
-                if attempts >= max_attempts:
-                    env["status"] = "failed"
-                    transition_envelope(inst_cfg, "sending", "failed", env, on_after_write=_stage_hook)
-                    failed += 1
-                else:
-                    base_s = int(env.get("base_backoff_seconds") or DEFAULT_BASE_BACKOFF_SECONDS)
-                    max_s = int(env.get("max_backoff_seconds") or DEFAULT_MAX_BACKOFF_SECONDS)
-                    delay = min(max_s, base_s * (2 ** max(0, attempts - 1)))
-                    env["status"] = "pending"
-                    env["next_retry_at"] = _shift_seconds(end_dt, delay, tz).isoformat()
-                    transition_envelope(inst_cfg, "sending", "pending", env, on_after_write=_stage_hook)
-                    retried += 1
-            _update_dedupe_entry(dedupe, env, end_iso)
-            save_dedupe(inst_cfg, dedupe)
-
-    if rec_info["recovered"] or sent or failed or retried or corrupted:
-        ledger.record(
-            inst_cfg,
-            "job",
-            job="outbox",
-            date=now_dt.date().isoformat(),
-            result="failed" if failed else "ok",
-            note=f"sent={sent}; retried={retried}; failed={failed}; recovered={rec_info['recovered']}",
-        )
-
-    return {
-        "delivery_semantics": DELIVERY_SEMANTICS,
-        "recovered": rec_info["recovered"],
-        "sent": sent,
-        "retried": retried,
-        "failed": failed,
-        "deferred_backoff": deferred_backoff,
-        "corrupted": corrupted,
-        "dedupe_health": rec_info["dedupe_health"],
-        "dedupe_rebuilt": rec_info["dedupe_rebuilt"],
-    }
-
-
-def retry_failed(
-    cfg: InstanceConfig | str,
-    message_id: str | None = None,
-    extra_attempts: int = 3,
-    now: datetime.datetime | str | None = None,
-) -> dict[str, Any]:
-    """将 failed/ 下的有效信封重新放回 pending/ 排队重试（跳过 corrupt-* 隔离文件）。"""
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    now_iso = _now_dt(inst_cfg, now).isoformat()
-    requeued = 0
-    dedupe_health = "uninitialized"
-    dedupe_rebuilt = False
-    with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
-        ensure_layout(inst_cfg)
-        reconcile_duplicate_files(inst_cfg)
-        dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
-        fdir = state_subdir(inst_cfg, "failed")
-        for p in sorted(fdir.glob("*.json")):
-            if p.name.startswith("corrupt-"):
-                continue
-            env = load_envelope(p)
-            if env is None:
-                continue
-            if message_id and env["message_id"] != message_id:
-                continue
-            env["status"] = "pending"
-            env["max_attempts"] = max(int(env.get("max_attempts") or DEFAULT_MAX_ATTEMPTS), int(env.get("attempts") or 0) + max(1, extra_attempts))
-            env["next_retry_at"] = now_iso
-            env["updated_at"] = now_iso
-            env["last_error"] = "manual-requeue"
-            transition_envelope(inst_cfg, "failed", "pending", env, on_after_write=_stage_hook)
-            _update_dedupe_entry(dedupe, env, now_iso)
-            requeued += 1
-        if requeued:
-            save_dedupe(inst_cfg, dedupe)
-    return {
-        "requeued": requeued,
-        "delivery_semantics": DELIVERY_SEMANTICS,
-        "dedupe_health": dedupe_health,
-        "dedupe_rebuilt": dedupe_rebuilt,
-    }
-
-
-def archive_old(
-    cfg: InstanceConfig | str,
-    retain_days: int = DEFAULT_ARCHIVE_RETAIN_DAYS,
-    include_failed: bool = False,
-    now: datetime.datetime | str | None = None,
-) -> dict[str, Any]:
-    """将超过保留天数的 sent/（及可选 failed/）信封归档至 <state>/outbox/archive/YYYY-MM/ 并清理过期冷却键。"""
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    now_dt = _now_dt(inst_cfg, now)
-    now_iso = now_dt.isoformat()
-    tz = ZoneInfo(inst_cfg.timezone)
-    cutoff = _shift_seconds(now_dt, -86400 * max(0, int(retain_days)), tz)
-    archived = pruned_dedupe = 0
-    dedupe_health = "uninitialized"
-    dedupe_rebuilt = False
-
-    with lock.runner_lock(inst_cfg, name=OUTBOX_LOCK_NAME, wait_seconds=5.0):
-        ensure_layout(inst_cfg)
-        reconcile_duplicate_files(inst_cfg)
-        dedupe, dedupe_health, dedupe_rebuilt = _load_dedupe_with_heal_locked(inst_cfg, now_iso)
-        targets = ("sent", "failed") if include_failed else ("sent",)
-        for st in targets:
-            sdir = state_subdir(inst_cfg, st)
-            for p in sorted(sdir.glob("*.json")):
-                if p.name.startswith("corrupt-"):
-                    continue
-                env = load_envelope(p)
-                if env is None:
-                    continue
-                ts_dt = parse_iso(env.get("sent_at") or env.get("updated_at") or env.get("created_at"), tz)
-                if ts_dt is None or _utc(ts_dt) > _utc(cutoff):
-                    continue
-                ym = ts_dt.strftime("%Y-%m")
-                env["archived_at"] = now_iso
-                transition_envelope(inst_cfg, st, "archive", env, archive_ym=ym, on_after_write=_stage_hook)
-                dkey = str(env.get("dedupe_key") or "")
-                if dkey and dedupe.get(dkey, {}).get("message_id") == env.get("message_id"):
-                    _update_dedupe_entry(dedupe, env, now_iso, dir_state="archive")
-                archived += 1
-
-        keep_dedupe: dict[str, dict[str, Any]] = {}
-        for k, entry in dedupe.items():
-            exp_dt = parse_iso(entry.get("expires_at"), tz)
-            if exp_dt is not None and _utc(exp_dt) <= _utc(now_dt):
-                pruned_dedupe += 1
-                continue
-            keep_dedupe[k] = entry
-        if pruned_dedupe or archived:
-            save_dedupe(inst_cfg, keep_dedupe)
-
-    return {
-        "archived": archived,
-        "pruned_dedupe": pruned_dedupe,
-        "delivery_semantics": DELIVERY_SEMANTICS,
-        "dedupe_health": dedupe_health,
-        "dedupe_rebuilt": dedupe_rebuilt,
-    }
-
-
-def list_envelopes(cfg: InstanceConfig | str, status: str | None = None) -> dict[str, Any]:
-    """统计并列出 <state>/outbox/ 各状态信封。"""
-    inst_cfg = cfg if isinstance(cfg, InstanceConfig) else load_instance_config(cfg)
-    counts: dict[str, int] = {st: 0 for st in (*OUTBOX_STATES, "archive")}
-    items_out: list[dict[str, Any]] = []
-    root = outbox_dir(inst_cfg)
-    dedupe_health = "uninitialized"
-    corrupted_dedupe_index = False
-    if root.is_dir():
-        for st in OUTBOX_STATES:
-            sdir = state_subdir(inst_cfg, st)
-            if not sdir.is_dir():
-                continue
-            files = sorted(sdir.glob("*.json"))
-            counts[st] = len(files)
-            if status in (None, st):
-                for p in files:
-                    env = load_envelope(p)
-                    items_out.append(env if env is not None else {"file": p.name, "status": st, "corrupted": True})
-        adir = state_subdir(inst_cfg, "archive")
-        if adir.is_dir():
-            afiles = sorted(adir.rglob("*.json"))
-            counts["archive"] = len(afiles)
-            if status == "archive":
-                for p in afiles:
-                    env = load_envelope(p)
-                    items_out.append(env if env is not None else {"file": p.name, "status": "archive", "corrupted": True})
-        _, dstatus = load_dedupe_status(inst_cfg)
-        corrupted_dedupe_index = dstatus == "corrupt"
-        if dstatus == "corrupt":
-            dedupe_health = "corrupt"
-        elif dstatus == "missing":
-            dedupe_health = "missing_with_envelopes" if sum(counts.values()) > 0 else "uninitialized"
-        else:
-            dedupe_health = "ok"
-    return {
-        "delivery_semantics": DELIVERY_SEMANTICS,
-        "dedupe_health": dedupe_health,
-        "corrupted_dedupe_index": corrupted_dedupe_index,
-        "counts": counts,
-        "envelopes": items_out,
-    }
+        return {"queued": True, "deduplicated": False, "message_id": msg_id, "status": status, "delivery_semantics": DELIVERY_SEMANTICS, "dedupe_health": dedupe_health, "dedupe_rebuilt": dedupe_rebuilt}

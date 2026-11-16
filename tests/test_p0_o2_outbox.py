@@ -19,6 +19,7 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
         sys.path.insert(0, p)
 
 from hushai_agent import (  # noqa: E402
+    alerts,
     gate,
     heal,
     ledger,
@@ -286,19 +287,23 @@ class TestP0O2Outbox(unittest.TestCase):
         hooks = {"installed_units": {"hushai-demo-watch.path"}, "cmd_runner": always_down}
         h1 = heal.run_heal(self.cfg(), hooks=hooks)
         self.assertEqual(len(h1["alerts_written"]), 1)
-        self.assertEqual((self.vault / "hub" / "today.md").read_text(encoding="utf-8").count("- 系统："), 1)
+        self.assertEqual((self.vault / "hub" / "today.md").read_text(encoding="utf-8").count("- 系统："), 0)
+        self.assertEqual(len(alerts.load_recent_alerts(self.cfg(), limit=50)), 1)
 
-        # 3 小时后同一问题：24h 去重静默，不新增 outbox 信封也不重复写 today.md
+        # 3 小时后同一问题：24h 去重静默，不新增 outbox 信封也不重复记告警
         os.environ["HUSHAI_NOW"] = "2026-03-02T13:00:00"
         sent_before = outbox.list_envelopes(self.cfg())["counts"]["sent"]
         h2 = heal.run_heal(self.cfg(), hooks=hooks)
         self.assertEqual(h2["alerts_written"], [])
         self.assertEqual(outbox.list_envelopes(self.cfg())["counts"]["sent"], sent_before)
+        self.assertEqual(len(alerts.load_recent_alerts(self.cfg(), limit=50)), 1)
 
-        # 25 小时后冷却期过：重新触发新告警
+        # 25 小时后冷却期过：重新触发新告警（alerts.jsonl 记 2 条，load_recent_alerts 去重展示最新 1 条）
         os.environ["HUSHAI_NOW"] = "2026-03-03T11:05:00"
         h3 = heal.run_heal(self.cfg(), hooks=hooks)
         self.assertEqual(len(h3["alerts_written"]), 1)
+        self.assertEqual(len(alerts.alerts_path(self.cfg()).read_text(encoding="utf-8").splitlines()), 2)
+        self.assertEqual(len(alerts.load_recent_alerts(self.cfg(), limit=50)), 1)
 
         # (D) hushai outbox CLI 全流程 + on_event / heal 自动接管 pending/sending
         outbox.enqueue(self.cfg(), "exchange_out", "laptop", {"rel_path": "hub/exchange/out/to-laptop/on_ev.md", "content": "ev"}, dedupe_key="ev-1")
@@ -748,25 +753,36 @@ with mock.patch.object(outbox, "_stage_hook", side_effect=_hook):
 
         self.assertFalse((get_instance_state_dir("healbox") / "heal-alerts.json").exists())
         today_path = h_cfg.vault / "hub" / "today.md"
-        today_text_1 = today_path.read_text(encoding="utf-8") if today_path.is_file() else ""
-        self.assertEqual(today_text_1.count("系统：网关（连接超时）坏了"), 1)
+        self.assertEqual((today_path.read_text(encoding="utf-8") if today_path.is_file() else "").count("- 系统："), 0)
+        alert_file = alerts.alerts_path(h_cfg)
+        self.assertEqual(
+            sum(1 for ln in alert_file.read_text(encoding="utf-8").splitlines() if "网关（连接超时）坏了" in ln),
+            1,
+        )
 
-        # 清空 today.md 模拟人工清除当日行后，即使同时归档并损坏 dedupe.json，24h 内仍由 outbox 重建索引抑制重发
-        today_path.write_text("# 今日待办\n", encoding="utf-8")
+        # 即使归档并损坏 dedupe.json，24h 内仍由 outbox 重建索引抑制重发
         outbox.archive_old(h_cfg, retain_days=0, now="2026-03-05T10:05:00+08:00")
         (outbox_store.outbox_dir(h_cfg) / "dedupe.json").write_text("{corrupt", encoding="utf-8")
         t_within_24h = outbox_store.parse_iso("2026-03-06T09:59:59+08:00", ZoneInfo("Asia/Shanghai"))
         with mock.patch.object(clock, "now", return_value=t_within_24h):
             res_dup = heal._report_needs_human(h_cfg, item)
         self.assertIsNone(res_dup)
-        self.assertEqual(today_path.read_text(encoding="utf-8").count("系统：网关（连接超时）坏了"), 0)
+        self.assertEqual(
+            sum(1 for ln in alert_file.read_text(encoding="utf-8").splitlines() if "网关（连接超时）坏了" in ln),
+            1,
+        )
 
-        # 超过 24h 后允许再次告警并写入 today.md
+        # 超过 24h 后允许再次告警并写入 alerts.jsonl（仍不污染 today.md）
         t_after_24h = outbox_store.parse_iso("2026-03-06T10:00:01+08:00", ZoneInfo("Asia/Shanghai"))
         with mock.patch.object(clock, "now", return_value=t_after_24h):
             res_new = heal._report_needs_human(h_cfg, item)
+            recent_view = alerts.load_recent_alerts(h_cfg, limit=50)
         self.assertIsNotNone(res_new)
-        self.assertEqual(today_path.read_text(encoding="utf-8").count("系统：网关（连接超时）坏了"), 1)
+        self.assertEqual(
+            sum(1 for ln in alert_file.read_text(encoding="utf-8").splitlines() if "网关（连接超时）坏了" in ln),
+            2,
+        )
+        self.assertEqual(len(recent_view), 1)
 
 
 if __name__ == "__main__":

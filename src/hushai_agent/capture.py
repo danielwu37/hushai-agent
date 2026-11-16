@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from hushai_agent import clock
 from hushai_agent.config import InstanceConfig, load_instance_config
+from hushai_agent.config_ext import load_ext
 from hushai_agent.fsio import atomic_write
 from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.vault import add_inbox_entry
@@ -101,9 +102,29 @@ def _load_capture_state(state_dir: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("sessions"), dict):
             return data
-    except (OSError, json.JSONDecodeError):
-        pass
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"hushai capture state read warning: {exc}\n")
     return {"sessions": {}}
+
+
+def _pick_capture_domain(cfg: InstanceConfig, snippet: str) -> str:
+    """从句子里精确匹配领域（ASCII 词走词边界避免 AI 误命中 MAIL 等词），未命中时用安全中性默认领域。"""
+    for d in cfg.domains:
+        if not d:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_-]+", d):
+            if re.search(rf"(?<![A-Za-z0-9]){re.escape(d)}(?![A-Za-z0-9])", snippet):
+                return d
+        elif d in snippet:
+            return d
+
+    ext = load_ext(cfg)
+    if ext.capture_default_domain and ext.capture_default_domain in cfg.domains:
+        return ext.capture_default_domain
+    for neutral in ("生活", "life"):
+        if neutral in cfg.domains:
+            return neutral
+    return cfg.domains[0]
 
 
 def _save_capture_state(state_dir: Path, data: dict[str, Any]) -> None:
@@ -171,8 +192,10 @@ def run_capture(
                     "elapsed_seconds": round(elapsed, 1),
                 }
 
-    # 领域：话里点名了哪个已配置的领域就用哪个，否则用第一个领域
-    domain = next((d for d in inst_cfg.domains if d and d in snippet), inst_cfg.domains[0])
+    if snippet.startswith(("- 系统：", "自愈：", "管家切换")):
+        return {"ok": True, "written": False, "reason": "system-noise", "session_id": session_id}
+
+    domain = _pick_capture_domain(inst_cfg, snippet)
     inbox_path = add_inbox_entry(
         instance=inst_cfg.name,
         door=target_door,

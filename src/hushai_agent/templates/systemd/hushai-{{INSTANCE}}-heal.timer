@@ -2,7 +2,7 @@
 Description=hushAi-agent {{INSTANCE}}: heal timer
 
 [Timer]
-OnCalendar=*-*-* *:00:00
+OnCalendar=*-*-* *:50:00 {{TZ}}
 Persistent=true
 
 [Install]

@@ -186,10 +186,13 @@ class TestSecondBrain(unittest.TestCase):
         self.assertEqual(link_health["broken_links"], [])
         self.assertEqual(link_health["underlinked_notes"], [], msg=link_health)
 
-        # 重复笔记：未确认不删改，确认后才合并并归档原件
+        # 重复笔记：未确认不删改，确认后才合并并归档原件；按新增笔记做增量重复扫描
         p_raw = brain_process.process_raw_items(
             self.cfg(),
-            [{"text": "笔记：本地只读索引优于复杂数据库。本地只读索引非常可靠。", "domain": "工作", "date": "2026-03-10", "source_ref": "test-dup"}],
+            [
+                {"text": "笔记：本地只读索引优于复杂数据库。本地只读索引非常可靠。", "domain": "工作", "date": "2026-03-10", "source_ref": "test-dup-1"},
+                {"text": "笔记：本地只读索引优于复杂数据库。本地只读索引非常可靠。", "domain": "工作", "date": "2026-03-10", "source_ref": "test-dup-2"},
+            ],
             as_of_date="2026-03-10",
             confirm_merge=False,
         )
