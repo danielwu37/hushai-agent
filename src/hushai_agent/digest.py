@@ -6,7 +6,7 @@ import datetime
 from typing import Any
 
 from hushai_agent import (
-    candidates, checkpoint, collect, cortex, cursor, items, judge, ledger, lock, mechanical, report, runner, statusfile, todaysel,
+    candidates, checkpoint, collect, cortex, cursor, items, judge, ledger, local_items, lock, mechanical, report, runner, statusfile, todaysel,
 )
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
@@ -134,6 +134,8 @@ def run_digest(
             as_of_date=as_of_date,
             pre_open_ids=pre_open_ids,
         )
+        if not dry_run:
+            applied_info["created"] += local_items.create_local_only_items(inst_cfg, all_items, archived_ids, mech.rest, as_of_date)
         cand_lines, corr_lines = build_candidate_and_correction_lines(
             as_of_date=as_of_date,
             mech_candidates=mech.candidates,
@@ -282,15 +284,7 @@ def run_digest(
         )
         return summary
     except Exception as exc:
-        ledger.record(
-            inst_cfg,
-            "job",
-            job="digest",
-            date=as_of_str,
-            dry_run=dry_run,
-            result="failed",
-            note=str(exc),
-        )
+        ledger.record(inst_cfg, "job", job="digest", date=as_of_str, dry_run=dry_run, result="failed", note=str(exc))
         raise
     finally:
         lock_ctx.__exit__(None, None, None)

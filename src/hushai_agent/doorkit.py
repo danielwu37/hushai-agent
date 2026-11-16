@@ -32,14 +32,14 @@ DENY_RULES = [
     "Bash(systemctl disable*)",
     "Bash(mail*)",
     "Bash(sendmail*)",
-    "Write(/etc/*)",
-    "Write(/root/.ssh/*)",
-    "Write(/root/.config/*)",
-    "Write(/root/.claude/*)",
-    "Edit(/etc/*)",
-    "Edit(/root/.ssh/*)",
-    "Edit(/root/.config/*)",
-    "Edit(/root/.claude/*)",
+    "Write(//etc/**)",
+    "Write(//root/.ssh/**)",
+    "Write(//root/.config/**)",
+    "Write(//root/.claude/**)",
+    "Edit(//etc/**)",
+    "Edit(//root/.ssh/**)",
+    "Edit(//root/.config/**)",
+    "Edit(//root/.claude/**)",
 ]
 
 ASK_RULES = [

@@ -55,6 +55,7 @@ def register_loop_commands(subparsers: Any) -> None:
     p_weekly = subparsers.add_parser("weekly", help="执行每周洞察重写与审计周报生成")
     p_weekly.add_argument("--instance", required=True, help="实例名称")
     p_weekly.add_argument("--date", default=None, help="基准日期 YYYY-MM-DD（默认当日）")
+    p_weekly.add_argument("--scheduled", action="store_true", help="定时器触发：基准日取预定周日，晚到的补跑若本期已出则跳过")
     p_weekly.add_argument("--dry-run", action="store_true", help="演练模式（只写状态目录 dry-run，默认不调真实模型）")
     p_weekly.add_argument("--with-model", action="store_true", help="演练模式也强制真实调用大模型")
     p_weekly.add_argument("--json", action="store_true", help="以 JSON 格式输出摘要")
@@ -142,6 +143,15 @@ def dispatch_loop_command(args: argparse.Namespace) -> int | None:
     if args.command == "weekly":
         cfg = load_instance_config(args.instance)
         as_of = args.date.strip() if args.date and args.date.strip() else clock.today(cfg)
+        if getattr(args, "scheduled", False) and not (args.date and args.date.strip()):
+            from hushai_agent.heal_checks_ext import scheduled_weekly_date
+
+            sched = scheduled_weekly_date(cfg, clock.now(cfg))
+            if sched is None:
+                ledger.record(cfg, "job", job="weekly", date=clock.today(cfg).isoformat(), dry_run=bool(args.dry_run), result="ok", note="skipped: already-ran-this-cycle")
+                print("本期周报已出，跳过补跑")
+                return 0
+            as_of = sched
         summary = weekly.run_weekly(
             cfg,
             as_of=as_of,

@@ -242,11 +242,18 @@ def dispatch_brain_command(args: argparse.Namespace) -> int | None:
                 "monthly": updated.monthly_enabled,
             },
         }
+        if not updated.enabled:
+            res["removed_units"], res["installed_leftovers"] = install.remove_brain_units(cfg)
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
             label = "启用" if enabled else "禁用"
             print(f"已{label} routine `{args.routine}`：{res['state']}")
+            if res.get("removed_units"):
+                print(f"已清理配置目录里的 second-brain 单元 {len(res['removed_units'])} 个")
+            if res.get("installed_leftovers"):
+                names = " ".join(res["installed_leftovers"])
+                print(f"系统目录里还装着 second-brain 单元，需管理员执行：\n  cd /etc/systemd/system && sudo systemctl disable --now {names}; sudo rm -f {names} && sudo systemctl daemon-reload")
         return 0
 
     if sub == "units":

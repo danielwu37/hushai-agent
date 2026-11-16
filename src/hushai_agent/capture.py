@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from hushai_agent import clock
+from hushai_agent import clock, ledger
 from hushai_agent.config import InstanceConfig, load_instance_config
 from hushai_agent.config_ext import load_ext
 from hushai_agent.fsio import atomic_write
@@ -19,6 +19,8 @@ from hushai_agent.vault import add_inbox_entry
 
 THROTTLE_SECONDS = 600
 MAX_CHARS = 80
+# 管家维护类对话的缺省特征（不分大小写的子串）；[capture] system_markers 可整体替换
+DEFAULT_SYSTEM_MARKERS = ("你是 hushai 管家", "你是hushai管家", "hushai-agent", "hushai doctor", "代码审核", "代码审查")
 
 
 def _extract_text_from_content(content: Any) -> str:
@@ -194,6 +196,10 @@ def run_capture(
 
     if snippet.startswith(("- 系统：", "自愈：", "管家切换")):
         return {"ok": True, "written": False, "reason": "system-noise", "session_id": session_id}
+    markers = load_ext(inst_cfg).capture_system_markers or DEFAULT_SYSTEM_MARKERS
+    if any(m.casefold() in snippet.casefold() for m in markers):
+        ledger.record(inst_cfg, "job", job="capture", date=now_dt.date().isoformat(), result="ok", note=f"skipped: system-maintenance door={target_door}")
+        return {"ok": True, "written": False, "reason": "system-maintenance", "session_id": session_id}
 
     domain = _pick_capture_domain(inst_cfg, snippet)
     inbox_path = add_inbox_entry(

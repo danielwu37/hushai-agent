@@ -107,10 +107,10 @@ class TestAuditFixes(unittest.TestCase):
         as_of_1, for_1 = digest_plan.resolve_default_digest_dates(self.cfg)
         self.assertEqual((as_of_1, for_1), (datetime.date(2026, 11, 15), datetime.date(2026, 11, 16)))
 
-        # 昨日日报已有 -> 回落为今日
+        # 昨日日报已有 -> 基准日回落为今日；还没到 digest_time，今日待办仍写当天
         (self.vault / "hub" / "reports" / "daily-2026-11-15.md").write_text("# 日报\n", encoding="utf-8")
         as_of_2, for_2 = digest_plan.resolve_default_digest_dates(self.cfg)
-        self.assertEqual((as_of_2, for_2), (datetime.date(2026, 11, 16), None))
+        self.assertEqual((as_of_2, for_2), (datetime.date(2026, 11, 16), datetime.date(2026, 11, 16)))
 
         # 2) catchup 日期判断
         units_dir = self.base / "units"

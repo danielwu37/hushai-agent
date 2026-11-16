@@ -204,6 +204,28 @@ def last_weekly_schedule_date(cfg: InstanceConfig, now_dt: datetime.datetime) ->
     return cand_date
 
 
+def scheduled_weekly_date(cfg: InstanceConfig, now_dt: datetime.datetime) -> datetime.date | None:
+    """定时器触发的周报该用哪天作基准：预定日当天照常跑；晚到的补跑若预定日之后已有周报则返回 None（跳过）。"""
+    sched_d = last_weekly_schedule_date(cfg, now_dt)
+    if sched_d == now_dt.date():
+        return sched_d
+
+    def _late(raw: str) -> bool:
+        try:
+            return sched_d <= datetime.date.fromisoformat(raw) <= now_dt.date()
+        except ValueError:
+            return False
+
+    reports_dir = cfg.vault / "hub" / "reports"
+    if reports_dir.is_dir() and any(_late(p.stem[len("weekly-") :]) for p in reports_dir.glob("weekly-*.md")):
+        return None
+    for r in ledger.read(cfg):
+        if r.get("kind") == "job" and r.get("job") == "weekly" and r.get("result") in ("ok", "degraded") and not r.get("dry_run"):
+            if _late(str(r.get("date") or "").strip()):
+                return None
+    return sched_d
+
+
 def weekly_ran_in_cycle(
     cfg: InstanceConfig,
     sched_date: datetime.date,

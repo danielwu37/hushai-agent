@@ -43,7 +43,10 @@ def resolve_default_digest_dates(
     date_arg: str | None = None,
     for_date_arg: str | None = None,
 ) -> tuple[datetime.date | str, datetime.date | str | None]:
-    """解析 CLI 默认日期：若次日凌晨 (<06:00) 且昨日尚未产出成功的 digest，则回指昨日。"""
+    """解析 CLI 默认日期：到了 digest_time 才把今日待办翻到明天；之前跑一律写当天。
+
+    凌晨 (<06:00) 且昨日还没有成功的 digest 时，基准日回指昨日（补昨天那份）。
+    """
     if date_arg and date_arg.strip():
         for_d = for_date_arg.strip() if for_date_arg and for_date_arg.strip() else None
         return date_arg.strip(), for_d
@@ -66,8 +69,14 @@ def resolve_default_digest_dates(
             for_d = for_date_arg.strip() if for_date_arg and for_date_arg.strip() else today_d
             return yesterday, for_d
 
-    for_d = for_date_arg.strip() if for_date_arg and for_date_arg.strip() else None
-    return today_d, for_d
+    if for_date_arg and for_date_arg.strip():
+        return today_d, for_date_arg.strip()
+    from hushai_agent.install import detect_existing_digest_time
+
+    dh, dm = (int(x) for x in detect_existing_digest_time(cfg).split(":", 1))
+    if now_dt < now_dt.replace(hour=dh, minute=dm, second=0, microsecond=0):
+        return today_d, today_d
+    return today_d, None
 
 
 def execute_digest_commit_plan(

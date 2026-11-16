@@ -40,6 +40,7 @@ class ExtConfig:
     sync_pull_doors: tuple[str, ...] = ()
     sync_server_doors: tuple[str, ...] = DEFAULT_SYNC_SERVER_DOORS
     capture_default_domain: str = ""
+    capture_system_markers: tuple[str, ...] = ()
 
 
 def _csv(raw: str) -> tuple[str, ...]:
@@ -111,4 +112,5 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
         sync_pull_doors=sync_pull_doors,
         sync_server_doors=sync_server_doors,
         capture_default_domain=capture_default_domain,
+        capture_system_markers=_csv(parser.get("capture", "system_markers", fallback="")),
     )

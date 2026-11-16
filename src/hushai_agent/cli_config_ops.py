@@ -7,6 +7,7 @@ from pathlib import Path
 from hushai_agent import brief, candidates, clock, digest, doctor, heal, lifecycle, weekly
 from hushai_agent.cli_config_io import MenuIO, _menu_loop, _prompt, _prompt_non_empty
 from hushai_agent.config import load_instance_config
+from hushai_agent.digest_plan import resolve_default_digest_dates
 from hushai_agent.paths import get_instance_config_file
 from hushai_agent.todo import get_today_status, run_todo_action
 from hushai_agent.vault import add_inbox_entry
@@ -96,9 +97,9 @@ def _submenu_maintenance(io: MenuIO, inst: str) -> None:
     def do_digest() -> None:
         cfg = load_instance_config(inst)
         dry = io.read_line("是否演练模式 (--dry-run)？[y/N]: ").strip().lower() in ("y", "yes", "1")
-        as_of = clock.today(cfg)
-        res = digest.run_digest(cfg, as_of, dry_run=dry)
-        io.write(f"✓ 每日汇总完成 ({res['date']})：新增收件 {res['new_lines']} 行，明日待办 {res['today_count']} 条，降级={res.get('degraded') or '否'}")
+        as_of, for_date = resolve_default_digest_dates(cfg)
+        res = digest.run_digest(cfg, as_of, dry_run=dry, for_date=for_date)
+        io.write(f"✓ 每日汇总完成 ({res['date']})：新增收件 {res['new_lines']} 行，{res['for_date']} 待办 {res['today_count']} 条，降级={res.get('degraded') or '否'}")
 
     def do_weekly() -> None:
         cfg = load_instance_config(inst)

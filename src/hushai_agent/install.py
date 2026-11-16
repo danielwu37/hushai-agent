@@ -194,3 +194,15 @@ def next_steps(cfg: InstanceConfig, written: list[Path]) -> list[str]:
         f"  sudo systemctl enable --now {' '.join(enable)}",
         f"  # 需要待办页面时再启用：sudo systemctl enable --now hushai-{cfg.name}-serve.service",
     ]
+
+
+def remove_brain_units(cfg: InstanceConfig, system_dir: str | Path = "/etc/systemd/system") -> tuple[list[str], list[str]]:
+    """second-brain 全关后清掉 <config>/units 里的 brain 单元，免得跟着 cp 装进系统；返回 (已清理, 系统目录残留)。"""
+    names = [p.name.replace("{{INSTANCE}}", cfg.name) for p in sorted(TEMPLATES_BRAIN_DIR.iterdir())]
+    units_dir = get_config_root() / cfg.name / "units"
+    removed = []
+    for name in names:
+        if (units_dir / name).is_file():
+            (units_dir / name).unlink()
+            removed.append(name)
+    return removed, [n for n in names if (Path(system_dir) / n).exists()]
