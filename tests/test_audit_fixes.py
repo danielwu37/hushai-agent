@@ -195,7 +195,8 @@ class TestAuditFixes(unittest.TestCase):
         self.assertIn("WebFetch", claude_s["permissions"]["ask"])
         self.assertIn("command(rm -rf /*)", agy_s["permissions"]["deny"])
         self.assertIn("command(find * -delete*)", agy_s["permissions"]["deny"])
-        self.assertIn("write_file(/etc/*)", agy_s["permissions"]["deny"])
+        self.assertIn("write_file(/etc/)", agy_s["permissions"]["deny"])
+        self.assertIn("edit_file(/etc/)", agy_s["permissions"]["deny"])
         self.assertIn("command(curl *)", agy_s["permissions"]["ask"])
         self.assertIn("command(rclone *)", agy_s["permissions"]["ask"])
 

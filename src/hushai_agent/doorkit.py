@@ -74,10 +74,14 @@ AGY_DENY_RULES = [
     "command(systemctl disable*)",
     "command(mail*)",
     "command(sendmail*)",
-    "write_file(/etc/*)",
-    "write_file(/root/.ssh/*)",
-    "write_file(/root/.config/*)",
-    "write_file(/root/.claude/*)",
+    "write_file(/etc/)",
+    "write_file(/root/.ssh/)",
+    "write_file(/root/.config/)",
+    "write_file(/root/.claude/)",
+    "edit_file(/etc/)",
+    "edit_file(/root/.ssh/)",
+    "edit_file(/root/.config/)",
+    "edit_file(/root/.claude/)",
 ]
 
 AGY_ASK_RULES = [
