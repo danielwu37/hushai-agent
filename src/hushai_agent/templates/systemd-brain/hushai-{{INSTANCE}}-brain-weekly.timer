@@ -1,9 +1,0 @@
-[Unit]
-Description=hushAi-agent {{INSTANCE}}: second-brain weekly timer ({{BRAIN_WEEKLY_DAY}} {{BRAIN_WEEKLY_TIME}})
-
-[Timer]
-OnCalendar={{BRAIN_WEEKLY_DAY}} *-*-* {{BRAIN_WEEKLY_TIME}}:00 {{TZ}}
-Persistent=true
-
-[Install]
-WantedBy=timers.target

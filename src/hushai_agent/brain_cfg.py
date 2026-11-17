@@ -1,11 +1,13 @@
-"""Second-brain 配置（[brain] 节）与状态文件（<state>/brain-state.json）管理。
+"""第二大脑配置（[brain] 节）与状态文件（<state>/brain-state.json）。
 
-所有 routine 默认禁用（false），须由用户显式执行 enable 才开启。
+默认关闭；`hushai brain enable` 打开并把 since 设为当天，免得一开就把积压全量编译。
+模型链用 [jobs] brain，没配时借 [jobs] digest；调用计入单独预算 max_daily_calls，不占主预算。
 """
 
 from __future__ import annotations
 
 import configparser
+import datetime
 import json
 import re
 from dataclasses import dataclass
@@ -13,109 +15,43 @@ from pathlib import Path
 from typing import Any
 
 from hushai_agent.config import ConfigError, InstanceConfig
-from hushai_agent.config_edit import update_ini_text
 from hushai_agent.fsio import atomic_write
-from hushai_agent.paths import get_instance_config_dir, get_instance_config_file, get_instance_state_dir
+from hushai_agent.paths import get_instance_config_file, get_instance_state_dir
 
-ROUTINE_NAMES = ("daily", "weekly", "resurface", "monthly")
-DEFAULT_DAILY_TIME = "21:00"
-DEFAULT_WEEKLY_DAY = "Sun"
-DEFAULT_WEEKLY_TIME = "18:00"
-DEFAULT_RESURFACE_TIME = "09:00"
-DEFAULT_MONTHLY_TIME = "09:30"
-DEFAULT_MIN_LINKS = 2
-DEFAULT_STALE_MONTHS = 6
+STATE_VERSION = 2
+DEFAULT_TIME = "22:30"
+DEFAULT_MAX_DAILY_CALLS = 12
+DEFAULT_MAX_CALLS_PER_RUN = 6
 DEFAULT_INDEX_MAX_LINES = 200
-DEFAULT_RESURFACE_MIN_AGE_DAYS = 3
-
+DEFAULT_STALE_DAYS = 90
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-WEEKDAY_MAP = {
-    "mon": "Mon", "monday": "Mon",
-    "tue": "Tue", "tuesday": "Tue",
-    "wed": "Wed", "wednesday": "Wed",
-    "thu": "Thu", "thursday": "Thu",
-    "fri": "Fri", "friday": "Fri",
-    "sat": "Sat", "saturday": "Sat",
-    "sun": "Sun", "sunday": "Sun",
-}
 
-DEFAULT_BRAIN_INI_BLOCK = (
-    "[brain]\n"
-    "enabled = false\n"
-    "daily_enabled = false\n"
-    "weekly_enabled = false\n"
-    "resurface_enabled = false\n"
-    "monthly_enabled = false\n"
-    f"daily_time = {DEFAULT_DAILY_TIME}\n"
-    f"weekly_day = {DEFAULT_WEEKLY_DAY}\n"
-    f"weekly_time = {DEFAULT_WEEKLY_TIME}\n"
-    f"resurface_time = {DEFAULT_RESURFACE_TIME}\n"
-    f"monthly_time = {DEFAULT_MONTHLY_TIME}\n"
-    f"min_links = {DEFAULT_MIN_LINKS}\n"
-    f"stale_months = {DEFAULT_STALE_MONTHS}\n"
-    f"index_max_lines = {DEFAULT_INDEX_MAX_LINES}\n"
+DEFAULT_BRAIN_INI_LINES = (
+    "[brain]",
+    "enabled = false",
+    f"time = {DEFAULT_TIME}",
+    "since =",
+    f"max_daily_calls = {DEFAULT_MAX_DAILY_CALLS}",
+    f"max_calls_per_run = {DEFAULT_MAX_CALLS_PER_RUN}",
+    f"index_max_lines = {DEFAULT_INDEX_MAX_LINES}",
+    f"stale_days = {DEFAULT_STALE_DAYS}",
 )
 
 
 @dataclass(frozen=True)
 class BrainConfig:
-    """解析后的 [brain] 配置。所有 routine 默认禁用。"""
+    """解析后的 [brain] 配置。"""
 
     enabled: bool = False
-    daily_enabled: bool = False
-    weekly_enabled: bool = False
-    resurface_enabled: bool = False
-    monthly_enabled: bool = False
-    daily_time: str = DEFAULT_DAILY_TIME
-    weekly_day: str = DEFAULT_WEEKLY_DAY
-    weekly_time: str = DEFAULT_WEEKLY_TIME
-    resurface_time: str = DEFAULT_RESURFACE_TIME
-    monthly_time: str = DEFAULT_MONTHLY_TIME
-    min_links: int = DEFAULT_MIN_LINKS
-    stale_months: int = DEFAULT_STALE_MONTHS
+    time: str = DEFAULT_TIME
+    since: str = ""
+    max_daily_calls: int = DEFAULT_MAX_DAILY_CALLS
+    max_calls_per_run: int = DEFAULT_MAX_CALLS_PER_RUN
     index_max_lines: int = DEFAULT_INDEX_MAX_LINES
-    resurface_min_age_days: int = DEFAULT_RESURFACE_MIN_AGE_DAYS
-
-    def is_routine_enabled(self, routine: str) -> bool:
-        """判断指定 routine 是否已启用（支持 'daily' | 'weekly' | 'resurface' | 'monthly'）。"""
-        mapping = {
-            "daily": self.daily_enabled,
-            "weekly": self.weekly_enabled,
-            "resurface": self.resurface_enabled,
-            "monthly": self.monthly_enabled,
-        }
-        if routine not in mapping:
-            raise ValueError(f"未知 routine: {routine}")
-        return bool(mapping[routine])
+    stale_days: int = DEFAULT_STALE_DAYS
 
 
-def _parse_bool(raw: str, default: bool = False) -> bool:
-    val = (raw or "").strip().lower()
-    if not val:
-        return default
-    return val in ("true", "1", "yes", "on")
-
-
-def _parse_time(parser: configparser.ConfigParser, key: str, default: str) -> str:
-    raw = parser.get("brain", key, fallback="").strip()
-    if not raw:
-        return default
-    if not TIME_RE.match(raw):
-        raise ConfigError(f"配置 [brain].{key} 时间格式需为 HH:MM: {raw}")
-    return raw
-
-
-def _parse_weekday(parser: configparser.ConfigParser, key: str, default: str) -> str:
-    raw = parser.get("brain", key, fallback="").strip()
-    if not raw:
-        return default
-    norm = WEEKDAY_MAP.get(raw.lower())
-    if not norm:
-        raise ConfigError(f"配置 [brain].{key} 星期非法（可选 Mon/Tue/Wed/Thu/Fri/Sat/Sun）: {raw}")
-    return norm
-
-
-def _parse_pos_int(parser: configparser.ConfigParser, key: str, default: int, allow_zero: bool = False) -> int:
+def _pos_int(parser: configparser.ConfigParser, key: str, default: int) -> int:
     raw = parser.get("brain", key, fallback="").strip()
     if not raw:
         return default
@@ -123,74 +59,49 @@ def _parse_pos_int(parser: configparser.ConfigParser, key: str, default: int, al
         num = int(raw)
     except ValueError as exc:
         raise ConfigError(f"配置 [brain].{key} 必须为整数: {raw}") from exc
-    if (allow_zero and num < 0) or (not allow_zero and num <= 0):
-        raise ConfigError(f"配置 [brain].{key} 取值不合法: {num}")
+    if num <= 0:
+        raise ConfigError(f"配置 [brain].{key} 必须大于 0: {num}")
     return num
 
 
 def load_brain_config(cfg: InstanceConfig) -> BrainConfig:
-    """从实例 config.ini 读取 [brain] 配置；缺失时全部默认为禁用。"""
-    cfg_file = get_instance_config_file(cfg.name)
+    """从实例 config.ini 读取 [brain]；缺节时返回默认（关闭）。旧版键（daily_enabled 等）忽略。"""
     parser = configparser.ConfigParser(interpolation=None)
     try:
-        parser.read_string(cfg_file.read_text(encoding="utf-8"))
+        parser.read_string(get_instance_config_file(cfg.name).read_text(encoding="utf-8"))
     except (OSError, configparser.Error, UnicodeDecodeError) as exc:
         raise ConfigError(f"读取配置文件失败: {exc}") from exc
-
     if not parser.has_section("brain"):
         return BrainConfig()
-
+    enabled = parser.get("brain", "enabled", fallback="false").strip().lower() in ("true", "1", "yes", "on")
+    time_raw = parser.get("brain", "time", fallback="").strip() or DEFAULT_TIME
+    if not TIME_RE.match(time_raw):
+        raise ConfigError(f"配置 [brain].time 需为 HH:MM: {time_raw}")
+    since = parser.get("brain", "since", fallback="").strip()
+    if since:
+        try:
+            datetime.date.fromisoformat(since)
+        except ValueError as exc:
+            raise ConfigError(f"配置 [brain].since 需为 YYYY-MM-DD: {since}") from exc
     return BrainConfig(
-        enabled=_parse_bool(parser.get("brain", "enabled", fallback="false")),
-        daily_enabled=_parse_bool(parser.get("brain", "daily_enabled", fallback="false")),
-        weekly_enabled=_parse_bool(parser.get("brain", "weekly_enabled", fallback="false")),
-        resurface_enabled=_parse_bool(parser.get("brain", "resurface_enabled", fallback="false")),
-        monthly_enabled=_parse_bool(parser.get("brain", "monthly_enabled", fallback="false")),
-        daily_time=_parse_time(parser, "daily_time", DEFAULT_DAILY_TIME),
-        weekly_day=_parse_weekday(parser, "weekly_day", DEFAULT_WEEKLY_DAY),
-        weekly_time=_parse_time(parser, "weekly_time", DEFAULT_WEEKLY_TIME),
-        resurface_time=_parse_time(parser, "resurface_time", DEFAULT_RESURFACE_TIME),
-        monthly_time=_parse_time(parser, "monthly_time", DEFAULT_MONTHLY_TIME),
-        min_links=_parse_pos_int(parser, "min_links", DEFAULT_MIN_LINKS),
-        stale_months=_parse_pos_int(parser, "stale_months", DEFAULT_STALE_MONTHS),
-        index_max_lines=_parse_pos_int(parser, "index_max_lines", DEFAULT_INDEX_MAX_LINES),
-        resurface_min_age_days=_parse_pos_int(
-            parser, "resurface_min_age_days", DEFAULT_RESURFACE_MIN_AGE_DAYS, allow_zero=True
-        ),
+        enabled=enabled,
+        time=time_raw,
+        since=since,
+        max_daily_calls=_pos_int(parser, "max_daily_calls", DEFAULT_MAX_DAILY_CALLS),
+        max_calls_per_run=_pos_int(parser, "max_calls_per_run", DEFAULT_MAX_CALLS_PER_RUN),
+        index_max_lines=_pos_int(parser, "index_max_lines", DEFAULT_INDEX_MAX_LINES),
+        stale_days=_pos_int(parser, "stale_days", DEFAULT_STALE_DAYS),
     )
 
 
-def _update_ini_section(raw_text: str, section: str, updates: dict[str, str]) -> str:
-    """在尽量保留原有注释和格式的前提下，原子更新 INI 指定节的键值。"""
-    return update_ini_text(raw_text, {section: dict(updates)})
-
-
-def set_brain_routine_enabled(cfg: InstanceConfig, target: str, enabled: bool) -> BrainConfig:
-    """启用或禁用指定的 second-brain routine（daily | weekly | resurface | monthly | all）。"""
-    if target != "all" and target not in ROUTINE_NAMES:
-        raise ValueError(f"不支持的 routine 名称: {target}（可选 daily|weekly|resurface|monthly|all）")
-
+def set_enabled(cfg: InstanceConfig, enabled: bool, since: str | None = None) -> BrainConfig:
+    """打开或关闭第二大脑；打开时 since 默认为当天（只编译从今天起的新材料）。"""
+    from hushai_agent import clock
     from hushai_agent.config_edit import apply_config_updates
 
-    current = load_brain_config(cfg)
-    targets = ROUTINE_NAMES if target == "all" else (target,)
-    state_map = {
-        "daily": current.daily_enabled,
-        "weekly": current.weekly_enabled,
-        "resurface": current.resurface_enabled,
-        "monthly": current.monthly_enabled,
-    }
-    for name in targets:
-        state_map[name] = enabled
-
-    overall_enabled = enabled or any(state_map.values())
-    updates: dict[str, str | None] = {
-        "enabled": "true" if overall_enabled else "false",
-        "daily_enabled": "true" if state_map["daily"] else "false",
-        "weekly_enabled": "true" if state_map["weekly"] else "false",
-        "resurface_enabled": "true" if state_map["resurface"] else "false",
-        "monthly_enabled": "true" if state_map["monthly"] else "false",
-    }
+    updates: dict[str, str | None] = {"enabled": "true" if enabled else "false"}
+    if enabled:
+        updates["since"] = since or clock.today(cfg).isoformat()
     _, _, new_brain = apply_config_updates(cfg.name, {"brain": updates})
     return new_brain
 
@@ -199,41 +110,28 @@ def _state_file(cfg: InstanceConfig) -> Path:
     return get_instance_state_dir(cfg.name) / "brain-state.json"
 
 
-def default_brain_state() -> dict[str, Any]:
-    """返回默认的 second-brain 状态结构。"""
-    return {
-        "onboarded": False,
-        "onboarded_at": "",
-        "preferences": {},
-        "initial_setup_shown": False,
-        "processed_inbox_ids": [],
-        "processed_exchange_files": [],
-        "resurface_history": [],
-        "monthly_last_run": "",
-    }
+def default_state() -> dict[str, Any]:
+    """done_lines：已编译的收件行编号；done_files：投放文件相对路径 -> sha256。"""
+    return {"version": STATE_VERSION, "done_lines": [], "done_files": {}, "last_run": {}}
 
 
-def load_brain_state(cfg: InstanceConfig) -> dict[str, Any]:
-    """读取 <state>/brain-state.json；不存在或损坏时返回默认状态。"""
-    path = _state_file(cfg)
-    base = default_brain_state()
-    if not path.is_file():
-        return base
+def load_state(cfg: InstanceConfig) -> dict[str, Any]:
+    """读取状态；不存在、损坏或是旧版（v1）结构时返回空状态。"""
+    base = default_state()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_state_file(cfg).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return base
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
         return base
     for key, val in base.items():
-        if key not in data or not isinstance(data[key], type(val)):
+        if not isinstance(data.get(key), type(val)):
             data[key] = val
     return data
 
 
-def save_brain_state(cfg: InstanceConfig, state: dict[str, Any]) -> Path:
-    """原子保存 <state>/brain-state.json。"""
+def save_state(cfg: InstanceConfig, state: dict[str, Any]) -> Path:
+    """原子保存状态文件。"""
     state_dir = get_instance_state_dir(cfg.name)
-    path = _state_file(cfg)
     payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
-    return atomic_write(path, payload, [state_dir])
+    return atomic_write(_state_file(cfg), payload, [state_dir])

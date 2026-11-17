@@ -77,36 +77,31 @@ def check_lessons(vault_path: Path) -> CheckItem:
 
 
 def check_brain(vault_path: Path, index_max_lines: int = 200) -> CheckItem:
-    """检查 second-brain 目录与 hub/index.md 行数上限。"""
-    from hushai_agent.brain_model import BRAIN_SUBDIRS, extract_md_links, resolve_hub_link
+    """第二大脑页面体检（不需配置）：断链、重名、头信息、目录行数。没有页面时跳过。"""
+    from hushai_agent.brain_page import TYPE_DIRS, load_pages, norm, wikilinks
 
     hub_dir = vault_path / "hub"
-    idx_file = hub_dir / "index.md"
-    if not (idx_file.is_file() or any((hub_dir / d).is_dir() for d in BRAIN_SUBDIRS)):
-        return CheckItem(id="second-brain", level="OK", message="未启用 second-brain 目录（跳过）")
-
-    missing = [f"hub/{d}/" for d in BRAIN_SUBDIRS if not (hub_dir / d).is_dir()]
-    if not idx_file.is_file():
-        missing.append("hub/index.md")
-    if missing:
-        return CheckItem(id="second-brain", level="FAIL", message=f"second-brain 缺失项: {', '.join(missing)}")
-
-    idx_lines = len(idx_file.read_text(encoding="utf-8").splitlines())
+    pages = load_pages(hub_dir)
+    if not pages:
+        return CheckItem(id="second-brain", level="OK", message="第二大脑还没有页面（跳过）")
+    owners: dict[str, set[str]] = {}
+    for page in pages:
+        for name in page.names():
+            owners.setdefault(norm(name), set()).add(page.rel)
+    broken = [f"{p.title}->[[{t}]]" for p in pages for t in wikilinks(p.body) if norm(t) not in owners]
+    dups = [" / ".join(sorted(r)) for r in owners.values() if len(r) > 1]
+    bad = [p.rel for p in pages if p.kind not in TYPE_DIRS or not p.meta.get("title")]
+    idx = hub_dir / "index.md"
+    idx_lines = len(idx.read_text(encoding="utf-8").splitlines()) if idx.is_file() else 0
+    problems = []
     if idx_lines > index_max_lines:
-        return CheckItem(id="second-brain", level="FAIL", message=f"hub/index.md 行数 {idx_lines} 超过上限 {index_max_lines}")
-
-    broken: list[str] = []
-    for sub in ("notes", "sources", "people", "projects"):
-        sub_dir = hub_dir / sub
-        for p in sorted(sub_dir.glob("*.md")):
-            txt = p.read_text(encoding="utf-8")
-            for _, target in extract_md_links(txt):
-                res = resolve_hub_link(hub_dir, p, target)
-                if res is None or not res.exists():
-                    broken.append(f"{sub}/{p.name}->{target}")
-    if broken:
-        return CheckItem(id="second-brain", level="WARN", message=f"second-brain 存在断链: {', '.join(broken[:5])}")
-    return CheckItem(id="second-brain", level="OK", message="second-brain 目录、索引与链接正常")
+        problems.append(f"index.md {idx_lines} 行超过上限 {index_max_lines}")
+    for label, items in (("断链", broken), ("重名", dups), ("头信息不全", bad)):
+        if items:
+            problems.append(f"{label} {len(items)}：{'；'.join(sorted(set(items))[:3])}")
+    if problems:
+        return CheckItem(id="second-brain", level="WARN", message="第二大脑：" + "｜".join(problems))
+    return CheckItem(id="second-brain", level="OK", message=f"第二大脑 {len(pages)} 页，链接与目录正常")
 
 
 def validate_vault(vault_path: str | Path) -> dict[str, Any]:

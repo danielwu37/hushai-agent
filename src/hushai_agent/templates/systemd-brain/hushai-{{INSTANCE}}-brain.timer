@@ -1,0 +1,9 @@
+[Unit]
+Description=hushAi-agent {{INSTANCE}}: second-brain ingest timer
+
+[Timer]
+OnCalendar=*-*-* {{BRAIN_TIME}}:00 {{TZ}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

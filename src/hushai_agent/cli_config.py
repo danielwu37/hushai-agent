@@ -136,7 +136,7 @@ def run_config_menu(instance: str | None = None, io: MenuIO | None = None) -> in
             cio.write("  3. AI 适配器与模型调度（claude/agy/fake、回退链、派活、每日预算、自检）")
             cio.write("  4. 常驻管家管理与跨端路由（查看/切换 claude|agy/重启、@路由）")
             cio.write("  5. 多端接入与同步（rclone 同步、doorkit、systemd 单元、电脑/手机接入速查）")
-            cio.write("  6. 第二大脑 (Second-Brain) 设置与操作（开关、引导、Ask、加工、Routine）")
+            cio.write("  6. 第二大脑（开关、编译、检索、体检）")
             cio.write("  7. 日常查看与待办操作（今日待办、晨间简报、记收件、销待办、批记忆）")
             cio.write("  8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade/uninstall）")
             cio.write("  9. 切换或新建实例")

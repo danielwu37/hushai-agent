@@ -86,55 +86,23 @@ def detect_existing_digest_time(cfg: InstanceConfig) -> str:
     return DEFAULT_DIGEST_TIME
 
 
-def render_brain_units(
-    cfg: InstanceConfig,
-    out_dir: str | Path,
-    daily_time: str | None = None,
-    weekly_day: str | None = None,
-    weekly_time: str | None = None,
-    resurface_time: str | None = None,
-    monthly_time: str | None = None,
-    memory_max: str = DEFAULT_MEMORY_MAX,
-) -> list[Path]:
-    """渲染 second-brain 专用服务单元模板（默认从 [brain] 配置读取时间；只生成文件，不安装、不启用）。"""
-    from hushai_agent.brain_cfg import WEEKDAY_MAP, load_brain_config
-
-    bcfg = load_brain_config(cfg)
-    d_time = daily_time if daily_time is not None else bcfg.daily_time
-    w_day_raw = weekly_day if weekly_day is not None else bcfg.weekly_day
-    w_time = weekly_time if weekly_time is not None else bcfg.weekly_time
-    r_time = resurface_time if resurface_time is not None else bcfg.resurface_time
-    m_time = monthly_time if monthly_time is not None else bcfg.monthly_time
+def render_brain_units(cfg: InstanceConfig, out_dir: str | Path, memory_max: str = DEFAULT_MEMORY_MAX) -> list[Path]:
+    """渲染第二大脑编译定时器（时间取 [brain] time；只生成文件，不安装、不启用）。"""
+    from hushai_agent.brain_cfg import load_brain_config
 
     out = Path(out_dir).expanduser()
     if not out.is_dir():
         raise ValueError(f"输出目录不存在: {out_dir}")
-    for label, tval in (
-        ("--daily-time", d_time),
-        ("--weekly-time", w_time),
-        ("--resurface-time", r_time),
-        ("--monthly-time", m_time),
-    ):
-        if not TIME_RE.match(tval):
-            raise ValueError(f"{label} 需为 HH:MM: {tval}")
-    w_day = WEEKDAY_MAP.get(str(w_day_raw).strip().lower())
-    if not w_day:
-        raise ValueError(f"--weekly-day 星期非法（可选 Mon..Sun）: {w_day_raw}")
     if not MEMORY_RE.match(memory_max):
         raise ValueError(f"--memory-max 需形如 256M: {memory_max}")
     values = {
         "{{INSTANCE}}": cfg.name,
         "{{HUSHAI}}": _hushai_command(),
-        "{{VAULT}}": str(cfg.vault),
         "{{TZ}}": cfg.timezone,
         "{{USER}}": getpass.getuser(),
         "{{HOME}}": str(Path.home()),
         "{{MEMORY_MAX}}": memory_max,
-        "{{BRAIN_DAILY_TIME}}": d_time,
-        "{{BRAIN_WEEKLY_DAY}}": w_day,
-        "{{BRAIN_WEEKLY_TIME}}": w_time,
-        "{{BRAIN_RESURFACE_TIME}}": r_time,
-        "{{BRAIN_MONTHLY_TIME}}": m_time,
+        "{{BRAIN_TIME}}": load_brain_config(cfg).time,
         "{{CONFIG_ROOT}}": str(get_config_root()),
         "{{STATE_ROOT}}": str(get_state_root()),
     }
@@ -196,9 +164,18 @@ def next_steps(cfg: InstanceConfig, written: list[Path]) -> list[str]:
     ]
 
 
+# 2026-11-16 以前的旧版第二大脑单元（8 个），升级时提示从系统目录删掉
+LEGACY_BRAIN_UNITS = tuple(
+    f"hushai-{{name}}-{unit}.{ext}"
+    for unit in ("brain-daily", "brain-weekly", "resurface", "monthly")
+    for ext in ("service", "timer")
+)
+
+
 def remove_brain_units(cfg: InstanceConfig, system_dir: str | Path = "/etc/systemd/system") -> tuple[list[str], list[str]]:
-    """second-brain 全关后清掉 <config>/units 里的 brain 单元，免得跟着 cp 装进系统；返回 (已清理, 系统目录残留)。"""
-    names = [p.name.replace("{{INSTANCE}}", cfg.name) for p in sorted(TEMPLATES_BRAIN_DIR.iterdir())]
+    """第二大脑关闭后清掉 <config>/units 里的 brain 单元（含旧版 8 个），免得跟着 cp 装进系统；返回 (已清理, 系统目录残留)。"""
+    current = [p.name.replace("{{INSTANCE}}", cfg.name) for p in sorted(TEMPLATES_BRAIN_DIR.iterdir())]
+    names = current + [n.replace("{name}", cfg.name) for n in LEGACY_BRAIN_UNITS]
     units_dir = get_config_root() / cfg.name / "units"
     removed = []
     for name in names:

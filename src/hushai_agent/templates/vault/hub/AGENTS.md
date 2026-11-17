@@ -6,7 +6,7 @@
 
 1. 每次会话开始时，先读 `hub/profile.md`（使用者画像）和 `hub/status-index.md`（状态索引），若有补充约定再读 `hub/AGENTS.local.md`；涉及知识库检索与加工时先读 `hub/index.md`（不超过 200 行）。
 2. `hub/status-index.md` 仅提供主题与行号定位，**不含具体状态**；需要具体状态时，按索引去读 `hub/status.md` 对应章节或行。
-3. Second-brain 笔记位于 `hub/notes/`、`hub/sources/`、`hub/people/`、`hub/projects/`、`hub/daily/`，由 `hushai brain` 维护；不确定处标 `UNVERIFIED`，未经同意不删除或覆写既有笔记，私人笔记不出本系统。
+3. 第二大脑（`hub/projects/` 项目、`hub/notes/` 主题、`hub/people/` 人物、`hub/sources/` 原件摘要、`hub/daily/` 入脑日志）由 `hushai brain` 从显式交给它的材料编译维护，目录是 `hub/index.md`。查知识先读 `index.md` 或运行 `hushai brain ask "问题"`，再打开原页作答；页面状态「有出处」不等于「已核实」。要入脑：收件行「做了什么」以 `笔记：`、`来源：`、`人物：`、`项目：` 开头，或把 .md/.txt 放进 `hub/exchange/in/入脑/`（经闸门存的文件名用 `入脑-` 开头）。各端不直接改页面正文；页面里 `## 我的笔记` 以下归使用者，AI 不改不删；私人笔记不出本系统。
 4. 进入具体领域任务时，按需读取 `domains/<领域>/AGENTS.md` 及其下资料。
 5. 严禁脑补或编造事实；凡在记忆库中查不到的信息，一律明确写「状态未核实」。
 

@@ -7,17 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from hushai_agent import brain_cfg, brain_routines, brief, candidates, cortex, cursor, items, ledger, report, statusfile
-from hushai_agent.brain_cfg import load_brain_state
-from hushai_agent.brain_model import parse_index_entries
-from hushai_agent.checkpoint_verify_brain import (  # noqa: F401
-    _capture_brain_manifest,
-    _ensure_brain_index_entries,
-    _restore_brain_manifest,
-    _scan_brain_disk_refs,
-    _scan_eligible_brain_records,
-    _verify_and_repair_brain,
-)
+from hushai_agent import brief, candidates, cortex, cursor, items, ledger, report, statusfile
 from hushai_agent.config import InstanceConfig
 from hushai_agent.config_ext import load_ext
 from hushai_agent.daily_state import load_daily_accumulated, update_daily_state
@@ -197,27 +187,13 @@ def _brief_matches_disk(cfg: InstanceConfig) -> bool:
 
 
 def verify_closing_steps(cfg: InstanceConfig, ckpt: dict[str, Any]) -> dict[str, Any]:
-    """核验收尾步（晨间简报 MD/HTML 刷新、第二大脑实盘目标、旧笔记唤醒、Git 提交）并补齐缺漏。"""
+    """核验收尾步（晨间简报 MD/HTML 刷新、Git 提交）并补齐缺漏。"""
     closing = ckpt.setdefault("closing", {})
     as_of_str = str(ckpt.get("as_of") or "")
-    as_of_date = FlexDate.from_any(as_of_str)
     out: dict[str, Any] = {"brief_refreshed": False, "git_committed": False}
 
     if closing.get("brief_required", True) and not _brief_matches_disk(cfg):
         out["brief_refreshed"] = brief.refresh(cfg)
-
-    brain_mode = str(closing.get("brain_mode") or "")
-    bcfg = brain_cfg.load_brain_config(cfg)
-    if brain_mode in ("daily", "reconcile") and as_of_date is not None:
-        _verify_and_repair_brain(cfg, closing, bcfg, as_of_date, as_of_str, brain_mode, out)
-
-    if closing.get("resurface") and as_of_date is not None and bcfg.enabled and bcfg.resurface_enabled:
-        b_state = load_brain_state(cfg)
-        already = any(h.get("date") == as_of_str for h in (b_state.get("resurface_history") or []))
-        if not already:
-            out["brain_resurface"] = brain_routines.run_resurface(
-                cfg, as_of=as_of_date, dry_run=False, _hold_lock=False
-            )
 
     commit_msg = str(closing.get("commit_msg") or f"recover {as_of_str}")
     if is_hub_git_dirty(cfg.vault):

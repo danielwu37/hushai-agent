@@ -15,10 +15,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from hushai_agent import install, serve, sync
-from hushai_agent.brain_ask import answer_from_notes
-from hushai_agent.brain_cfg import load_brain_config, set_brain_routine_enabled
-from hushai_agent.brain_process import process_inbox_to_brain
-from hushai_agent.brain_routines import run_daily_brain
+from hushai_agent import brain_ask
+from hushai_agent.brain_cfg import load_brain_config
 from hushai_agent.cli_config import MenuIO, run_config_menu
 from hushai_agent.config import ConfigError, load_instance_config
 from hushai_agent.config_edit import apply_config_updates
@@ -84,8 +82,8 @@ class TestConfigMenu(unittest.TestCase):
             "2", "1", "工作,研发,生活", "3", "steward,office,laptop,phone,web", "0",
             # 3. AI 适配器 -> 1. 添加/修改 claude -> claude -> 命令路径 -> 轻 -> 重 -> 120 -> 3. digest 链 -> 返回
             "3", "1", "claude", "claude", "/usr/local/bin/claude", "haiku", "sonnet", "120", "3", "claude:light", "0",
-            # 6. 第二大脑 -> 1. 开关 routine -> daily -> y -> n(暂不重生成units) -> 返回
-            "6", "1", "daily", "y", "n", "0",
+            # 6. 第二大脑 -> 1. 开关 -> y -> 回车(收件起点今天) -> n(暂不重生成units) -> 返回
+            "6", "1", "y", "", "n", "0",
             # 7. 日常操作 -> 3. 记一件事 -> office -> 研发 -> 完成菜单重构 -> 无 -> 接手机端 -> 1. 看 today -> 返回
             "7", "3", "office", "研发", "完成菜单重构", "", "接手机端", "1", "0",
             # 0. 退出
@@ -106,8 +104,7 @@ class TestConfigMenu(unittest.TestCase):
 
         brain = load_brain_config(cfg)
         self.assertTrue(brain.enabled)
-        self.assertTrue(brain.daily_enabled)
-        self.assertFalse(brain.weekly_enabled)
+        self.assertRegex(brain.since, r"^\d{4}-\d{2}-\d{2}$")
 
         inbox_files = list((cfg.vault / "hub" / "inbox").glob("*-office.md"))
         self.assertEqual(len(inbox_files), 1)
@@ -134,30 +131,22 @@ class TestConfigMenu(unittest.TestCase):
     def test_04_brain_time_params_propagate_to_generated_units_and_reject_invalid(self) -> None:
         init_instance("t4", self.base / "v4", no_git=True)
         # 非法时间应当被拦截并回滚
-        rc, out = self._run_script(["6", "2", "99:99", "Funday", "18:00", "09:00", "09:30", "2", "6", "200", "0", "0"], instance="t4")
+        rc, out = self._run_script(["6", "2", "99:99", "12", "6", "200", "90", "0", "0"], instance="t4")
         self.assertEqual(rc, 0)
         self.assertIn("✗ 修改未保存", out)
-        self.assertEqual(load_brain_config(load_instance_config("t4")).daily_time, "21:00")
+        self.assertEqual(load_brain_config(load_instance_config("t4")).time, "22:30")
 
-        # 启用 routine 并修改时间为 07:15 / Mon / 06:45 / 08:05 / 05:20，选择立即重生成 units
+        # 开启，改编译时间为 07:15，选择立即重生成 units
         rc, out = self._run_script(
-            [
-                "6", "1", "all", "y", "n",
-                "2", "07:15", "Mon", "06:45", "08:05", "05:20", "3", "12", "150", "y",
-                "0", "0",
-            ],
+            ["6", "1", "y", "", "n", "2", "07:15", "12", "6", "150", "90", "y", "0", "0"],
             instance="t4",
         )
         self.assertEqual(rc, 0)
         units_dir = get_instance_config_dir("t4") / "units"
-        daily_timer = (units_dir / "hushai-t4-brain-daily.timer").read_text(encoding="utf-8")
-        weekly_timer = (units_dir / "hushai-t4-brain-weekly.timer").read_text(encoding="utf-8")
-        resurface_timer = (units_dir / "hushai-t4-resurface.timer").read_text(encoding="utf-8")
-        monthly_timer = (units_dir / "hushai-t4-monthly.timer").read_text(encoding="utf-8")
-        self.assertIn("OnCalendar=*-*-* 07:15:00", daily_timer)
-        self.assertIn("OnCalendar=Mon *-*-* 06:45:00", weekly_timer)
-        self.assertIn("OnCalendar=*-*-* 08:05:00", resurface_timer)
-        self.assertIn("OnCalendar=*-*-01 05:20:00", monthly_timer)
+        timer = (units_dir / "hushai-t4-brain.timer").read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=*-*-* 07:15:00", timer)
+        self.assertIn("brain ingest --instance t4", (units_dir / "hushai-t4-brain.service").read_text(encoding="utf-8"))
+        self.assertEqual(load_brain_config(load_instance_config("t4")).index_max_lines, 150)
 
     def test_05_cross_validation_rejects_broken_references_and_privacy_paths(self) -> None:
         init_instance("t5", self.base / "v5", no_git=True)
@@ -204,30 +193,27 @@ class TestConfigMenu(unittest.TestCase):
         with self.assertRaises(ConfigError):
             apply_config_updates("t5", {"sync": {"timeout": "0"}})
 
-    def test_06_second_brain_links_ask_and_sync_includes(self) -> None:
+    def test_06_second_brain_ask_and_sync_includes(self) -> None:
         init_instance("t6", self.base / "v6", no_git=True)
         cfg = load_instance_config("t6")
-        add_inbox_entry("t6", door="steward", domain="工作", did="和张三讨论了 Q4 预算，决定把云服务支出压缩 20%", todo="周五发预算表")
-        add_inbox_entry("t6", door="steward", domain="学习", did="读了 https://example.com/llm-agents 关于 LLM agent 记忆设计的文章")
-        add_inbox_entry("t6", door="steward", domain="工作", did="项目 hushai 上线 v0.2.0 配置菜单，云服务预算继续压缩")
-
-        res = process_inbox_to_brain(cfg)
-        self.assertGreaterEqual(res["filed_count"], 3)
-        for note_p in (cfg.vault / "hub" / "notes").glob("*.md"):
-            txt = note_p.read_text(encoding="utf-8")
-            self.assertNotIn("2026-11-14、unverified", txt)
-            self.assertNotIn("  ", note_p.splitlines()[0] if hasattr(note_p, "splitlines") else txt.splitlines()[0])
-
-        ans = answer_from_notes(cfg, "云服务预算压缩多少？")
-        self.assertTrue(ans["covered"])
-        self.assertIn("20%", ans["hits"][0]["quote"])
-        self.assertNotIn("共同关键词", ans["hits"][0]["quote"])
+        (cfg.vault / "hub" / "projects" / "Q4 预算.md").write_text(
+            "---\ntype: project\ntitle: Q4 预算\nsummary: 云服务支出压缩 20%\nstatus: 有出处\nupdated: 2026-11-14\n---\n\n"
+            "和 [[张三]] 讨论后决定把云服务支出压缩 20%。\n\n## 来源\n- 收件 2026-11-14 steward 10:00：笔记：Q4 预算\n\n## 我的笔记\n",
+            encoding="utf-8",
+        )
+        (cfg.vault / "hub" / "people" / "张三.md").write_text(
+            "---\ntype: person\ntitle: 张三\nsummary: 财务同事\n---\n\n财务同事。\n\n## 来源\n- x\n", encoding="utf-8"
+        )
+        ans = brain_ask.ask(cfg, "云服务预算压缩多少？")
+        self.assertEqual(ans["hits"][0]["title"], "Q4 预算")
+        self.assertTrue(any("20%" in x for x in ans["hits"][0]["excerpts"]))
+        self.assertEqual(ans["related"], ["张三（hub/people/张三.md）"])
 
         push_argv = sync._build_push_argv(cfg, ["rclone"], "onedrive:vault/hub", True)
         self.assertIn("/index.md", push_argv)
         self.assertIn("/notes/**", push_argv)
 
-    def test_07_serve_hot_reload_digest_time_preserve_and_daily_cumulative(self) -> None:
+    def test_07_serve_hot_reload_and_digest_time_preserve(self) -> None:
         import threading
         import urllib.request
 
@@ -256,18 +242,6 @@ class TestConfigMenu(unittest.TestCase):
         finally:
             srv.shutdown()
             srv.server_close()
-
-        # 3. 同一天两次运行 brain daily 不应覆盖前一次归档的明细
-        set_brain_routine_enabled(cfg, "daily", True)
-        add_inbox_entry("t7", door="steward", domain="工作", did="上午完成了接口联调")
-        d1 = run_daily_brain(cfg, as_of="2026-11-14")
-        self.assertFalse(d1["silent"])
-        add_inbox_entry("t7", door="steward", domain="工作", did="晚上补充了回归用例")
-        d2 = run_daily_brain(cfg, as_of="2026-11-14")
-        self.assertFalse(d2["silent"])
-        daily_md = (cfg.vault / "hub" / "daily" / "2026-11-14.md").read_text(encoding="utf-8")
-        self.assertIn("上午完成了接口联调", daily_md)
-        self.assertIn("晚上补充了回归用例", daily_md)
 
     def test_08_interactive_wizard_default_and_menu_uninstall(self) -> None:
         from unittest import mock

@@ -1,9 +1,0 @@
-[Unit]
-Description=hushAi-agent {{INSTANCE}}: second-brain monthly maintenance timer
-
-[Timer]
-OnCalendar=*-*-01 {{BRAIN_MONTHLY_TIME}}:00 {{TZ}}
-Persistent=true
-
-[Install]
-WantedBy=timers.target

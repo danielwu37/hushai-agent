@@ -1,250 +1,107 @@
-"""Second-brain 只读检索问答（Ask 模式）：只从本人笔记作答，绝不调模型编造。"""
+"""第二大脑检索（卡帕西 LLM Wiki 的 query 前半段）：纯本地打分，不调模型。
+
+返回最相关的几页（路径、摘要、命中原句）和它们链出去的相关页；
+由正在对话的 AI 读页作答。值得留下的答案写成收件行「笔记：……」，下次编译回填进页面。
+"""
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import re
-from pathlib import Path
 from typing import Any
 
-from hushai_agent.brain_model import (
-    BRAIN_SUBDIRS,
-    UNVERIFIED,
-    extract_semantic_body,
-    list_brain_markdown_files,
-    parse_note_sections,
-    read_index_first,
-    sanitize_single_line,
-    tokenize_text,
-)
-from hushai_agent.config import InstanceConfig
-from hushai_agent.fsio import read_for_prompt
-from hushai_agent.guard import GuardError
+from hushai_agent.brain_page import TYPE_LABELS, Page, load_pages, name_map, norm, wikilinks
+from hushai_agent.config import InstanceConfig, is_local_only_domain
 
-NEGATION_WORDS = ("不要", "不应", "不宜", "不可", "不能", "不是", "反对", "放弃", "取消", "停止", "无效", "不适合", "暂停", "not ", "never", "avoid", "stop", "drop")
-AFFIRM_WORDS = ("应该", "推荐", "建议", "采用", "选择", "支持", "有效", "适合", "坚持", "决定", "使用", "should", "use", "adopt", "prefer", "recommend")
-META_PREFIXES = ("- 日期：", "- 主题：", "- 状态：", "- 来源：", "- 作者：", "- 链接：")
-QUANT_RE = re.compile(r"(?:\d+(?:\.\d+)?\s*%|\d+\s*(?:万|亿|元|块|天|小时|分钟|次|个|条|篇|倍|人|月|年|gb|mb|kb|usd|rmb))", re.I)
-ASK_QUANTITY_RE = re.compile(r"(?:多少|几|比例|百分比|额度|预算|价格|金额|数量|多久|多大|how\s+much|how\s+many)", re.I)
+REVISIT_MIN_DAYS = 14
+STOP = set("的了吗呢吧啊是在和与及或我你他她它们这那个些什么怎么如何哪为何请问一下有没有关于现在目前")
+EXCERPT_MAX = 120
 
 
-def _extract_best_quote(text: str, query_tokens: set[str], ask_quant: bool = False) -> tuple[str, float]:
-    """从笔记正文选出与问题最匹配的原文片段（跳过元数据与关联笔记章节，按句/行返回，不做改写）。"""
-    best_line = ""
-    best_score = 0.0
-    in_related = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("## "):
-            in_related = line[3:].strip() == "关联笔记"
-            continue
-        if in_related or not line or line.startswith(("#", ">", "<!--")):
-            continue
-        if line.startswith(META_PREFIXES) or UNVERIFIED in line:
-            continue
-        line_clean = line.lstrip("-*0123456789. ").strip()
-        if not line_clean:
-            continue
-        ltoks = tokenize_text(line_clean)
-        matched = query_tokens & ltoks
-        overlap = len(matched) + sum(0.5 for t in matched if len(t) >= 2)
-        if overlap > 0:
-            quant_bonus = 1.5 if (ask_quant and QUANT_RE.search(line_clean)) else 0.0
-            score = (overlap + quant_bonus) / max(1.0, len(query_tokens) ** 0.5)
-            if score > best_score:
-                best_score = score
-                best_line = line_clean
-    if not best_line:
-        for raw in text.splitlines():
-            line = raw.strip()
-            if line.startswith("## ") and line[3:].strip() == "关联笔记":
-                break
-            if line and not line.startswith(("#", ">", "<!--", *META_PREFIXES)) and UNVERIFIED not in line:
-                best_line = line.lstrip("-* ").strip()
-                break
-    return best_line, best_score
+def tokens(question: str) -> list[str]:
+    """英文和数字按词，中文按相邻两字（去掉虚词）。"""
+    q = question.lower()
+    words = [w for w in re.findall(r"[a-z0-9][a-z0-9._-]+", q)]
+    for run in re.findall(r"[一-鿿]+", q):
+        run = "".join(ch for ch in run if ch not in STOP)
+        words += [run[i:i + 2] for i in range(len(run) - 1)] or ([run] if run else [])
+    return list(dict.fromkeys(words))
 
 
-NEG_PHRASE_RE = re.compile(
-    r"(?:不要|不应|不宜|不可|不能|不是|反对|放弃|取消|停止|无效|不适合|暂停|not\s+|never\s+|avoid\s+|stop\s+|drop\s+)[^\n，。；;,.]{0,16}",
-    re.I,
-)
+def _score(page: Page, toks: list[str], qnorm: str) -> int:
+    names = " ".join(page.names()).lower()
+    tags = " ".join(page.meta.get("tags") or []).lower()
+    summary = str(page.meta.get("summary") or "").lower()
+    body = page.body.lower()
+    score = sum(20 for n in page.names() if len(norm(n)) >= 2 and norm(n) in qnorm)
+    for t in toks:
+        score += 5 * (t in names) + 3 * (t in tags) + 2 * (t in summary) + min(body.count(t), 3)
+    return score
 
 
-def _polarity(text: str) -> str:
-    low = text.lower()
-    has_neg = any(w in low for w in NEGATION_WORDS)
-    stripped_neg = NEG_PHRASE_RE.sub(" ", low) if has_neg else low
-    has_aff = any(w in stripped_neg for w in AFFIRM_WORDS)
-    if has_neg and not has_aff:
-        return "neg"
-    if has_aff and not has_neg:
-        return "aff"
-    if has_neg:
-        return "neg"
-    return "neutral"
+def _excerpts(page: Page, toks: list[str]) -> list[str]:
+    ranked = []
+    for line in page.body.splitlines():
+        hits = sum(1 for t in toks if t in line.lower())
+        if hits and line.strip():
+            ranked.append((hits, line.strip()[:EXCERPT_MAX]))
+    return [text for _, text in sorted(ranked, key=lambda t: -t[0])[:3]]
 
 
-def _detect_disagreements(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """检查高相关命中笔记之间是否存在观点或事实冲突。"""
-    disagreements: list[dict[str, Any]] = []
-    for i in range(len(hits)):
-        for j in range(i + 1, len(hits)):
-            a, b = hits[i], hits[j]
-            shared = a["matched_tokens"] & b["matched_tokens"]
-            if not shared:
-                continue
-            pol_a = _polarity(a["quote"] + " " + a["snippet_context"])
-            pol_b = _polarity(b["quote"] + " " + b["snippet_context"])
-            if (pol_a == "neg" and pol_b == "aff") or (pol_a == "aff" and pol_b == "neg"):
-                disagreements.append({
-                    "note_a": {"title": a["title"], "path": a["rel_path"], "quote": a["quote"]},
-                    "note_b": {"title": b["title"], "path": b["rel_path"], "quote": b["quote"]},
-                    "shared_topic": "、".join(sorted(shared)[:4]),
-                })
-    return disagreements
+def ask(cfg: InstanceConfig, question: str, limit: int = 5) -> dict[str, Any]:
+    pages = load_pages(cfg.vault / "hub")
+    toks, qnorm = tokens(question), norm(question)
+    ranked = sorted(((s, p) for p in pages if (s := _score(p, toks, qnorm)) > 0), key=lambda t: (-t[0], t[1].title))
+    top = [p for _, p in ranked[:max(1, limit)]]
+    names = name_map(pages)
+    seen = {p.rel for p in top}
+    related: list[str] = []
+    for page in top:
+        for target in wikilinks(page.body):
+            hit = names.get(norm(target))
+            if hit is not None and hit.rel not in seen:
+                seen.add(hit.rel)
+                related.append(f"{hit.title}（hub/{hit.rel}）")
+    hits = [{
+        "title": p.title, "path": f"hub/{p.rel}", "type": TYPE_LABELS.get(p.kind, p.kind),
+        "summary": p.meta.get("summary") or "", "status": p.meta.get("status") or "",
+        "updated": p.meta.get("updated") or "", "excerpts": _excerpts(p, toks),
+    } for p in top]
+    return {"question": question, "hits": hits, "related": related[:5]}
 
 
-def _suggest_what_to_save(question: str) -> list[str]:
-    q = sanitize_single_line(question)
-    suggestions = [
-        f"如果这是阅读/视频中的概念，用 `hushai inbox add` 存入带来源链接与原句的资料（会自动建入 `hub/sources/` 与 `hub/notes/`）。",
-        f"如果涉及具体项目或待定事项，以 `项目：<项目名>｜{q}` 格式记录进收件箱（会建入 `hub/projects/`）。",
-        f"如果与某位联系人有关，以 `人物：<姓名>｜…` 格式记录其背景、沟通内容与承诺（会建入 `hub/people/`）。",
-    ]
-    return suggestions
+def render_text(res: dict[str, Any]) -> str:
+    if not res["hits"]:
+        return f"第二大脑里没有找到与「{res['question']}」相关的页面（状态未核实）。"
+    lines = [f"与「{res['question']}」最相关的页面（请打开原页再作答，不要只凭摘要）："]
+    for i, h in enumerate(res["hits"], 1):
+        lines.append(f"{i}. {h['title']}｜{h['type']}｜{h['status']}｜更新 {h['updated']}｜{h['path']}")
+        lines.append(f"   {h['summary']}")
+        lines += [f"   > {x}" for x in h["excerpts"]]
+    if res["related"]:
+        lines.append("相关：" + "；".join(res["related"]))
+    return "\n".join(lines)
 
 
-def answer_from_notes(
-    cfg: InstanceConfig,
-    question: str,
-    max_hits: int = 5,
-) -> dict[str, Any]:
-    """仅从允许读取的笔记回答问题，附原句引用与链接；检测冲突或提示未覆盖。"""
-    q_clean = sanitize_single_line(question)
-    if not q_clean:
-        raise ValueError("问题不能为空")
+def brief_section(cfg: InstanceConfig, today: datetime.date) -> dict[str, Any] | None:
+    """晨间简报用：昨天以来新建或更新的页，加一页按日期轮换的旧页重温。没有页面时返回 None。
 
-    # 按要求：所有任务开始前先读 index.md
-    _, index_entries = read_index_first(cfg)
-    query_tokens = tokenize_text(q_clean)
-    if not query_tokens:
-        query_tokens = {q_clean.lower()}
-    ask_quant = bool(ASK_QUANTITY_RE.search(q_clean))
-
-    candidate_paths: list[Path] = list_brain_markdown_files(cfg, BRAIN_SUBDIRS)
-    for extra_rel in ("hub/decisions.md", "hub/lessons.md", "hub/insights.md", "hub/status.md"):
-        p = cfg.vault / extra_rel
-        if p.is_file():
-            candidate_paths.append(p)
-
-    domains_dir = cfg.vault / "domains"
-    if domains_dir.is_dir():
-        for p in sorted(domains_dir.rglob("*.md")):
-            if p.is_file() and p.name != "README.md":
-                candidate_paths.append(p)
-
-    # 也把 index.md 中的链接目标文本纳入评分权重参考
-    index_titles = {e.target: f"{e.topic} {e.title} {e.brief}" for e in index_entries}
-
-    hits: list[dict[str, Any]] = []
-    seen_real: set[Path] = set()
-    for path in candidate_paths:
-        try:
-            real_p = path.resolve()
-            if real_p in seen_real:
-                continue
-            seen_real.add(real_p)
-            content = read_for_prompt(path, cfg.vault, cfg.local_only)
-        except (GuardError, OSError, UnicodeDecodeError):
-            continue
-
-        rel_vault = path.relative_to(cfg.vault).as_posix()
-        rel_hub = path.relative_to(cfg.vault / "hub").as_posix() if path.is_relative_to(cfg.vault / "hub") else rel_vault
-        parsed = parse_note_sections(content)
-        title = parsed["title"] or path.stem
-        idx_hint = index_titles.get(rel_hub, "")
-
-        body_semantic = extract_semantic_body(content)
-        doc_tokens = tokenize_text(f"{title}\n{idx_hint}\n{body_semantic}")
-        matched = query_tokens & doc_tokens
-        if not matched:
-            continue
-
-        quote, q_score = _extract_best_quote(content, query_tokens, ask_quant=ask_quant)
-        title_matched = query_tokens & tokenize_text(title)
-        title_bonus = len(title_matched) * 1.5
-        multi_bonus = sum(1.0 for t in matched if len(t) >= 2)
-        quant_doc_bonus = 5.0 if (ask_quant and QUANT_RE.search(quote)) else 0.0
-        score = len(matched) + multi_bonus + title_bonus + q_score * 2.0 + quant_doc_bonus
-
-        # 过滤微弱偶然单字匹配（当问题本身有多个词元时要求至少命中 >= 1 个多字词元或 >= 2 个词元）
-        multi_char_matched = [t for t in matched if len(t) >= 2]
-        if len(query_tokens) >= 3 and not multi_char_matched and len(matched) < 2:
-            continue
-
-        hits.append({
-            "title": title,
-            "rel_path": rel_vault,
-            "link": f"[{title}]({rel_vault})",
-            "quote": quote,
-            "snippet_context": content[:400],
-            "score": round(score, 3),
-            "matched_tokens": matched,
-            "date": parsed["date"],
-        })
-
-    hits.sort(key=lambda h: (-h["score"], h["rel_path"]))
-    top_hits = hits[:max_hits]
-    disagreements = _detect_disagreements(top_hits) if len(top_hits) >= 2 else []
-
-    if not top_hits:
-        suggestions = _suggest_what_to_save(q_clean)
-        lines = [
-            f"问题：{q_clean}",
-            "",
-            "你的笔记中暂未覆盖这个问题（未找到相关笔记，不作猜测或编造）。",
-            "",
-            "建议保存的内容：",
-            *[f"- {s}" for s in suggestions],
-        ]
-        return {
-            "question": q_clean,
-            "covered": False,
-            "hits": [],
-            "disagreements": [],
-            "suggestions": suggestions,
-            "answer_text": "\n".join(lines),
-        }
-
-    formatted_hits = [
-        {
-            "title": h["title"],
-            "path": h["rel_path"],
-            "link": h["link"],
-            "quote": h["quote"],
-            "date": h["date"],
-            "score": h["score"],
-        }
-        for h in top_hits
-    ]
-
-    lines = [f"问题：{q_clean}", "", "根据你的笔记，找到以下依据："]
-    for idx, h in enumerate(formatted_hits, start=1):
-        lines.append(f"{idx}. {h['link']}")
-        lines.append(f"   > \"{h['quote']}\"")
-
-    if disagreements:
-        lines.extend(["", "注意：以下笔记之间存在不同说法或冲突，并列展示供核对："])
-        for d in disagreements:
-            lines.append(f"- 冲突主题（{d['shared_topic']}）：")
-            lines.append(f"  - [{d['note_a']['title']}]({d['note_a']['path']})：\"{d['note_a']['quote']}\"")
-            lines.append(f"  - [{d['note_b']['title']}]({d['note_b']['path']})：\"{d['note_b']['quote']}\"")
-
-    return {
-        "question": q_clean,
-        "covered": True,
-        "hits": formatted_hits,
-        "disagreements": disagreements,
-        "suggestions": [],
-        "answer_text": "\n".join(lines),
-    }
+    简报会同步到网盘，隔离领域的页一律不出现。
+    """
+    pages = [p for p in load_pages(cfg.vault / "hub")
+             if p.kind != "source" and not is_local_only_domain(str(p.meta.get("domain") or ""), cfg)]
+    if not pages:
+        return None
+    since = (today - datetime.timedelta(days=1)).isoformat()
+    fresh = [p.title for p in sorted(pages, key=lambda p: str(p.meta.get("updated") or ""), reverse=True)
+             if str(p.meta.get("updated") or "") >= since][:5]
+    old_cut = (today - datetime.timedelta(days=REVISIT_MIN_DAYS)).isoformat()
+    old = sorted((p for p in pages if "" < str(p.meta.get("updated") or "") < old_cut), key=lambda p: p.rel)
+    revisit = None
+    if old:
+        pick = old[int(hashlib.sha256(today.isoformat().encode()).hexdigest(), 16) % len(old)]
+        revisit = {"title": pick.title, "summary": pick.meta.get("summary") or "", "path": f"hub/{pick.rel}"}
+    if not fresh and revisit is None:
+        return None
+    return {"fresh": fresh, "revisit": revisit}

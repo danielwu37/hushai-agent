@@ -2,18 +2,8 @@
 
 from __future__ import annotations
 
-from hushai_agent import doorkit, install, sync
-from hushai_agent.brain_ask import answer_from_notes
-from hushai_agent.brain_cfg import ROUTINE_NAMES, load_brain_config, set_brain_routine_enabled
-from hushai_agent.brain_onboard import render_heres_your_brain, run_onboard
-from hushai_agent.brain_process import process_inbox_to_brain
-from hushai_agent.brain_routines import (
-    get_brain_status,
-    run_daily_brain,
-    run_monthly_maintenance,
-    run_resurface,
-    run_weekly_brain,
-)
+from hushai_agent import brain_ask, brain_cfg, brain_lint, doorkit, install, sync
+from hushai_agent.brain_ingest import run_ingest
 from hushai_agent.cli_config_io import (
     MenuIO,
     _menu_loop,
@@ -72,7 +62,7 @@ def _submenu_sync_and_doors(io: MenuIO, inst: str) -> None:
         default_dtime = install.detect_existing_digest_time(cfg)
         dtime = _prompt_non_empty(io, "每日汇总时间 HH:MM", default_dtime)
         port = int(_prompt_non_empty(io, "本机待办网页端口", str(install.DEFAULT_PORT)))
-        with_brain = _prompt_bool(io, "是否同时生成 second-brain 专用定时器模板", load_brain_config(cfg).enabled)
+        with_brain = _prompt_bool(io, "是否同时生成第二大脑编译定时器", brain_cfg.load_brain_config(cfg).enabled)
         written = install.render_units(cfg, out_dir, dtime, install.DEFAULT_MEMORY_MAX, port, with_brain=with_brain)
         for p in written:
             io.write(f"✓ 已生成: {p}")
@@ -107,125 +97,66 @@ def _submenu_sync_and_doors(io: MenuIO, inst: str) -> None:
 
 
 def _submenu_brain(io: MenuIO, inst: str) -> None:
-    """6. 第二大脑（Second-Brain）设置与操作子菜单。"""
+    """6. 第二大脑：开关、编译、检索、体检。"""
 
     def summary() -> list[str]:
         cfg = load_instance_config(inst)
-        st = get_brain_status(cfg)
-        rt = st["routines"]
-        counts = ", ".join(f"{k}={v}" for k, v in st["counts"].items())
+        b = brain_cfg.load_brain_config(cfg)
+        rep = brain_lint.lint(cfg, b)
+        last = brain_cfg.load_state(cfg).get("last_run") or {}
         return [
-            f"引导状态: {'已完成' if st['onboarded'] else '未引导'} | 笔记数量: {counts}",
-            f"Routine开关: daily={rt['daily']}, weekly={rt['weekly']}, "
-            f"resurface={rt['resurface']}, monthly={rt['monthly']}",
-            f"少链告警: {st['underlinked_notes']} 条 | 断链: {st['broken_links']} 处",
+            f"开关: {'已开启' if b.enabled else '已关闭'} | 收件起点: {b.since or '-'} | 每晚 {b.time} 编译",
+            f"页面: {rep['pages']} | 待编译: 收件 {rep['pending_lines']} 行、文件 {rep['pending_files']} 个 | 体检: {rep['level']}",
+            f"上次编译: {last.get('at', '无')}",
         ]
 
-    def toggle_routines() -> None:
+    def toggle() -> None:
         cfg = load_instance_config(inst)
-        b = load_brain_config(cfg)
-        io.write("当前开关：")
-        for r in ROUTINE_NAMES:
-            io.write(f"  - {r}: {'已启用' if b.is_routine_enabled(r) else '已禁用'}")
-        target = _prompt_non_empty(io, "输入要操作的 routine（daily / weekly / resurface / monthly / all）", "all")
-        enable = _prompt_bool(io, f"将 `{target}` 设为启用还是禁用", True)
-        new_b = set_brain_routine_enabled(cfg, target, enable)
-        io.write(
-            f"✓ 已更新：daily={new_b.daily_enabled}, weekly={new_b.weekly_enabled}, "
-            f"resurface={new_b.resurface_enabled}, monthly={new_b.monthly_enabled}"
-        )
-        io.write("  [生效方式] daily/resurface 随每晚 digest 运行，weekly 随每周回顾运行；monthly 或自定义时间需安装专用 brain 定时器。")
-        if new_b.monthly_enabled or enable:
+        enable = _prompt_bool(io, "第二大脑开关", brain_cfg.load_brain_config(cfg).enabled)
+        since = _prompt(io, "从哪天的收件行开始收（YYYY-MM-DD，回车为今天）", "") if enable else ""
+        new_b = brain_cfg.set_enabled(cfg, enable, since=since or None)
+        io.write(f"✓ 第二大脑已{'开启' if new_b.enabled else '关闭'}，收件起点 {new_b.since or '-'}")
+        if new_b.enabled:
             _offer_regen_units(io, inst)
 
-    def set_brain_params() -> None:
-        b = load_brain_config(load_instance_config(inst))
-        d_time = _prompt_non_empty(io, "每日日报时间 (daily_time)", b.daily_time)
-        w_day = _prompt_non_empty(io, "每周回顾星期 (weekly_day, 如 Sun/Mon)", b.weekly_day)
-        w_time = _prompt_non_empty(io, "每周回顾时间 (weekly_time)", b.weekly_time)
-        r_time = _prompt_non_empty(io, "每日唤醒时间 (resurface_time)", b.resurface_time)
-        m_time = _prompt_non_empty(io, "每月维护时间 (monthly_time, 每月 1 号)", b.monthly_time)
-        min_l = _prompt_non_empty(io, "新笔记最少关联链接数 (min_links)", str(b.min_links))
-        stale_m = _prompt_non_empty(io, "孤立笔记告警月数 (stale_months)", str(b.stale_months))
-        idx_max = _prompt_non_empty(io, "index.md 最大行数 (index_max_lines)", str(b.index_max_lines))
+    def set_params() -> None:
+        b = brain_cfg.load_brain_config(load_instance_config(inst))
         _safe_apply(
             io,
             inst,
-            {
-                "brain": {
-                    "daily_time": d_time,
-                    "weekly_day": w_day,
-                    "weekly_time": w_time,
-                    "resurface_time": r_time,
-                    "monthly_time": m_time,
-                    "min_links": min_l,
-                    "stale_months": stale_m,
-                    "index_max_lines": idx_max,
-                }
-            },
-            "第二大脑时间与规则参数已更新。",
-            effect_hint="链接与行数规则立即生效；定时时间需重新生成并启用 second-brain systemd 定时器才会按新时间触发。",
+            {"brain": {
+                "time": _prompt_non_empty(io, "每晚编译时间 HH:MM", b.time),
+                "max_daily_calls": _prompt_non_empty(io, "每日模型调用上限（单独预算）", str(b.max_daily_calls)),
+                "max_calls_per_run": _prompt_non_empty(io, "每次编译最多调用次数", str(b.max_calls_per_run)),
+                "index_max_lines": _prompt_non_empty(io, "index.md 最大行数", str(b.index_max_lines)),
+                "stale_days": _prompt_non_empty(io, "多少天没更新算待复核", str(b.stale_days)),
+            }},
+            "第二大脑参数已更新。",
+            effect_hint="上限立即生效；编译时间需重新生成并安装第二大脑定时器。",
             prompt_units=True,
         )
 
-    def do_onboard() -> None:
-        cfg = load_instance_config(inst)
-        res = run_onboard(cfg, interactive=True, prompt_fn=lambda q: io.read_line(f"{q}\n> "))
-        if res.get("skipped"):
-            io.write(res["greeting"])
-            if io.read_line("是否查看当前 HERE'S YOUR BRAIN 总览？[y/N]: ").strip().lower() in ("y", "yes", "1"):
-                io.write(render_heres_your_brain(cfg))
-        else:
-            io.write(res.get("output_text", ""))
+    def do_ingest() -> None:
+        res = run_ingest(load_instance_config(inst), force=True)
+        io.write(f"✓ 编译 {res.get('done', 0)}/{res.get('pending', 0)} 批 | 新建 {len(res.get('created', []))} | "
+                 f"更新 {len(res.get('updated', []))}" + (f" | 中止: {res['degraded']}" if res.get("degraded") else ""))
 
     def do_ask() -> None:
-        res = answer_from_notes(load_instance_config(inst), _prompt_non_empty(io, "输入要向第二大脑提问的问题"))
-        io.write("\n" + res["answer_text"])
+        res = brain_ask.ask(load_instance_config(inst), _prompt_non_empty(io, "要查什么"))
+        io.write("\n" + brain_ask.render_text(res))
 
-    def do_process() -> None:
-        cfg = load_instance_config(inst)
-        confirm = io.read_line("遇到重复笔记时是否允许自动合并并备档？[y/N]: ").strip().lower() in ("y", "yes", "1")
-        res = process_inbox_to_brain(cfg, confirm_merge=confirm)
-        io.write(
-            f"✓ 加工完成 ({res['date']})：归档 {res['filed_count']} 条 | 自动补链 {len(res['auto_linked'])} 篇 | "
-            f"少链告警 {len(res['underlinked_notes'])} 篇 | 重复候选 {len(res['duplicate_candidates'])} 组"
-        )
-
-    def do_run_routine() -> None:
-        cfg = load_instance_config(inst)
-        which = _prompt_non_empty(io, "选择要手动运行的 routine (daily / weekly / resurface / monthly)", "daily")
-        force = io.read_line("若该 routine 当前未启用，是否仍单次强制运行 (--force)？[y/N]: ").strip().lower() in ("y", "yes", "1")
-        if which == "daily":
-            out = run_daily_brain(cfg, force=force)
-            if out.get("skipped"):
-                io.write(f"daily 跳过: {out['skipped']}")
-            elif out.get("silent"):
-                io.write("daily: 无新内容，保持静默。")
-            else:
-                io.write(out.get("output_text", ""))
-        elif which == "weekly":
-            out = run_weekly_brain(cfg, force=force)
-            io.write(f"weekly 完成: {out.get('weekly_file') or out.get('skipped')}")
-        elif which == "resurface":
-            out = run_resurface(cfg, force=force)
-            io.write(out.get("output_text") or out.get("message") or f"resurface 跳过: {out.get('skipped')}")
-        elif which == "monthly":
-            confirm = io.read_line("是否允许清理并归档重复笔记/断链 (--yes)？[y/N]: ").strip().lower() in ("y", "yes", "1")
-            out = run_monthly_maintenance(cfg, confirm_merge=confirm, force=force)
-            io.write(out.get("output_text") or f"monthly 跳过: {out.get('skipped')}")
-        else:
-            raise ValueError(f"不支持的 routine: {which}")
+    def do_lint() -> None:
+        io.write(brain_lint.render_text(brain_lint.lint(load_instance_config(inst))))
 
     _menu_loop(
         io,
-        "6. 第二大脑 (Second-Brain) 设置与操作",
+        "6. 第二大脑",
         summary,
         [
-            ("启用或禁用 Routine (daily / weekly / resurface / monthly / all)", toggle_routines),
-            ("修改定时时间、最少链接数与 index 行数限制", set_brain_params),
-            ("首次运行 5 问引导 / 查看 HERE'S YOUR BRAIN", do_onboard),
-            ("向第二大脑提问 (Ask — 纯本地笔记有据回答)", do_ask),
-            ("立即加工未处理收件到笔记与关联网络", do_process),
-            ("手动运行一次指定 Routine (daily / weekly / resurface / monthly)", do_run_routine),
+            ("开启或关闭", toggle),
+            ("修改编译时间、预算与目录行数", set_params),
+            ("立即编译一次待处理材料（调模型）", do_ingest),
+            ("检索页面（本地，不调模型）", do_ask),
+            ("体检（断链、重名、孤页、待复核）", do_lint),
         ],
     )

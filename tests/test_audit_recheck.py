@@ -155,17 +155,18 @@ class TestAuditRecheck(unittest.TestCase):
         cap2 = capture.run_capture("demo", "steward", json.dumps({"session_id": "s2", "transcript_path": str(tr)}))
         self.assertTrue(cap2["written"])
 
-    def test_brain_disable_all_removes_generated_units(self) -> None:
+    def test_brain_disable_removes_generated_units_including_legacy(self) -> None:
         units = get_instance_config_dir("demo") / "units"
-        self.assertTrue((units / "hushai-demo-brain-daily.timer").is_file())
-        brain_cfg.set_brain_routine_enabled(self.cfg, "daily", True)
-        proc = run_hushai_cli(SRC_DIR, "brain", "disable", "all", "--instance", "demo", "--json")
+        self.assertTrue((units / "hushai-demo-brain.timer").is_file())
+        (units / "hushai-demo-brain-daily.timer").write_text("legacy", encoding="utf-8")
+        brain_cfg.set_enabled(self.cfg, True)
+        proc = run_hushai_cli(SRC_DIR, "brain", "disable", "--instance", "demo", "--json")
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        self.assertEqual(len(json.loads(proc.stdout)["removed_units"]), 8)
+        self.assertEqual(len(json.loads(proc.stdout)["units_removed"]), 3)
         left = sorted(p.name for p in units.iterdir())
-        self.assertFalse([n for n in left if "brain" in n or "monthly" in n or "resurface" in n])
+        self.assertFalse([n for n in left if "brain" in n])
         self.assertIn("hushai-demo-digest.timer", left)
-
+        self.assertFalse(brain_cfg.load_brain_config(load_instance_config("demo")).enabled)
 
 if __name__ == "__main__":
     unittest.main()

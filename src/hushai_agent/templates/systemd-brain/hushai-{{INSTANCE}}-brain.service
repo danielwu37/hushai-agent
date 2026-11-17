@@ -1,5 +1,5 @@
 [Unit]
-Description=hushAi-agent {{INSTANCE}}: second-brain daily routine
+Description=hushAi-agent {{INSTANCE}}: second-brain ingest
 
 [Service]
 Type=oneshot
@@ -9,6 +9,7 @@ Environment=TZ={{TZ}}
 Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HUSHAI_CONFIG_ROOT={{CONFIG_ROOT}}
 Environment=HUSHAI_STATE_ROOT={{STATE_ROOT}}
-ExecStart={{HUSHAI}} brain daily --instance {{INSTANCE}}
+ExecStart={{HUSHAI}} brain ingest --instance {{INSTANCE}}
+TimeoutStartSec=1800
 Nice=10
 MemoryMax={{MEMORY_MAX}}

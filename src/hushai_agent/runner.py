@@ -81,7 +81,7 @@ def run_model(
     timeout 为 None 时各适配项用自己的配置（[adapters] <名字>.timeout，默认 180 秒）。
     chain 给出时用它而不是 [jobs] 里的链（路由用）；text_mode 为真时不要结构，
     交给 validate 的是 {"text": 回答文本}。
-    budget 给出时该任务单独计数（只数本任务的调用），不占主预算；主预算不数 capture。
+    budget 给出时该任务单独计数（只数本任务的调用），不占主预算；主预算不数 capture 与 brain。
     lock_wait 给出时模型锁只等这么久（会话钩子用，不能久等）。
     """
     chain = list(chain) if chain else _get_job_chain(cfg, job)
@@ -129,7 +129,7 @@ def _run_model_chain_locked(
     def _over_budget() -> bool:
         if budget is not None:
             return ledger.calls_today(cfg, only_job=job) >= budget
-        return ledger.calls_today(cfg, exclude_job="capture") >= cfg.max_daily_calls
+        return ledger.calls_today(cfg, exclude_job=ledger.SEPARATE_BUDGET_JOBS) >= cfg.max_daily_calls
 
     calls_made = 0
     last_adapter = ""

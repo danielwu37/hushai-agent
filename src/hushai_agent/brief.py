@@ -1,4 +1,4 @@
-"""晨间简报：把今日待办、等我拍板、候选记忆、疑似已办收在一屏。
+"""晨间简报：把今日待办、等我拍板、候选记忆、疑似已办（以及第二大脑新页与重温）收在一屏。
 
 build_brief 只读文件、不调模型；render_md 给只能读写文件的端；页面见 brief_html。
 """
@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from hushai_agent import alerts, candidates, clock, items
+from hushai_agent import alerts, brain_ask, candidates, clock, items
 from hushai_agent.config import InstanceConfig
 from hushai_agent.fsio import atomic_write
 from hushai_agent.items import FlexDate, OpenItem
@@ -106,10 +106,14 @@ def build_brief(cfg: InstanceConfig) -> dict[str, Any]:
         for c in candidates.pending(candidates.load(cfg))[:MAX_CANDIDATES]
     ]
     sys_alerts = alerts.active_alerts(cfg, hours=48, limit=5)  # 只报未恢复的 warning 及以上
+    try:
+        brain = brain_ask.brief_section(cfg, today)
+    except Exception:  # 第二大脑读不了不能拖垮简报
+        brain = None
     return {
         "for_date": for_date.isoformat(), "degraded": DEGRADED_QUOTE in text,
         "todos": todos, "decisions": decisions, "candidates": cands, "suspects": suspects,
-        "alerts": sys_alerts,
+        "alerts": sys_alerts, "brain": brain,
     }
 
 
@@ -151,6 +155,13 @@ def render_md(brief: dict[str, Any]) -> str:
         for a in brief["alerts"]:
             sug = f"｜建议：{a['suggestion']}" if a.get("suggestion") else ""
             lines.append(f"- [{a.get('level', 'info')}] {a['message']}{sug}")
+    if brief.get("brain"):
+        lines += ["", "## 第二大脑"]
+        if brief["brain"]["fresh"]:
+            lines.append("- 新入脑：" + "、".join(f"[[{t}]]" for t in brief["brain"]["fresh"]))
+        rv = brief["brain"]["revisit"]
+        if rv:
+            lines.append(f"- 重温：[[{rv['title']}]]｜{rv['summary']}｜{rv['path']}")
     if not how:
         lines += ["", "（今天没有要你处理的事）"]
     else:

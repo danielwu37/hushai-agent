@@ -91,9 +91,8 @@ def execute_commit_plan(cfg: InstanceConfig, plan: dict[str, Any]) -> dict[str, 
     _save_ckpt(cfg, filename, plan)
     _stage_hook("after_cursor")
 
-    # 3. 收尾步（晨间简报、第二大脑、唤醒、Git 提交）
+    # 3. 收尾步（晨间简报、Git 提交）
     closing_res = verify_closing_steps(cfg, plan)
-    plan.setdefault("closing", {})["brain_done"] = True
     plan["stage"] = "closing_done"
     _save_ckpt(cfg, filename, plan)
     _stage_hook("after_closing")
@@ -148,9 +147,6 @@ def _validate_plan_schema(plan: Any) -> dict[str, Any]:
         val = plan.get(list_key)
         if val is not None and not isinstance(val, list):
             raise _CorruptCheckpoint(f"field {list_key} must be array or null")
-    closing = plan.get("closing")
-    if isinstance(closing, dict) and closing.get("brain_targets") is not None and not isinstance(closing.get("brain_targets"), dict):
-        raise _CorruptCheckpoint("closing.brain_targets must be object or null")
     return plan
 
 
@@ -197,7 +193,6 @@ def recover_pending(cfg: InstanceConfig) -> dict[str, int]:
 
         # 再过一遍全目标核验确保 Git 与简报在补齐后完全自洽
         if plan.get("closing"):
-            plan["closing"]["brain_done"] = True
             verify_closing_steps(cfg, plan)
         ledger_job = str((plan.get("closing") or {}).get("ledger_job") or "")
         if ledger_job:

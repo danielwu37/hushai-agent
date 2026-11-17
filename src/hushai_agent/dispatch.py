@@ -229,7 +229,7 @@ def run_dispatch(
         }
 
     today_str = clock.today(inst_cfg).isoformat()
-    if ledger.calls_today(inst_cfg, exclude_job="capture") >= inst_cfg.max_daily_calls:
+    if ledger.calls_today(inst_cfg, exclude_job=ledger.SEPARATE_BUDGET_JOBS) >= inst_cfg.max_daily_calls:
         return _abort_res("超出每日调用预算（max_daily_calls 已用尽）", f"name={name}; reason=budget")
 
     from hushai_agent import lock as _lock
@@ -250,7 +250,7 @@ def run_dispatch(
 
         if res1.interrupted and res1.conversation_id:
             _save_raw_output(job_dir / "out.pre.json", res1, state_dir)
-            if ledger.calls_today(inst_cfg, exclude_job="capture") >= inst_cfg.max_daily_calls:
+            if ledger.calls_today(inst_cfg, exclude_job=ledger.SEPARATE_BUDGET_JOBS) >= inst_cfg.max_daily_calls:
                 res_err = _abort_res("中断后准备续跑时每日调用预算已用尽", f"name={name}; resumed=False; reason=budget-on-resume", res1.model, res1.conversation_id, total_duration)
                 res_err["report_tail"] = (res1.text or res1.error or "")[-REPORT_TAIL_CHARS:]
                 return res_err

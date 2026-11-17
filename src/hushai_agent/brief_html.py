@@ -119,6 +119,14 @@ def render_body(brief: dict[str, Any], live: bool) -> str:
             sug = f'<div class="rec">建议：{escape(str(a["suggestion"]))}</div>' if a.get("suggestion") else ""
             meta = f"{escape(str(a.get('level', 'info')))} · {escape(str(a.get('ts', ''))[:16])}".strip(" ·")
             out.append(_card(str(a.get("message", "")), meta, sug, []))
+    brain = brief.get("brain")
+    if brain:
+        out.append("<h2>第二大脑</h2>")
+        if brain["fresh"]:
+            out.append(_card("新入脑：" + "、".join(brain["fresh"]), "", "", []))
+        if brain["revisit"]:
+            rv = brain["revisit"]
+            out.append(_card(f"重温：{rv['title']}", escape(rv["path"]), f'<div class="rec">{escape(rv["summary"])}</div>', []))
     if not (brief["todos"] or brief["decisions"] or brief["candidates"] or brief["suspects"] or brief.get("alerts")):
         out.append('<div class="card"><div class="t">今天没有要你处理的事</div></div>')
     return "".join(out)

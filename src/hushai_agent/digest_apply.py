@@ -5,30 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from hushai_agent import brain_process, items, statusfile
+from hushai_agent import items, statusfile
 from hushai_agent.config import InstanceConfig
 from hushai_agent.gitutil import commit_hub_if_git, is_hub_git_dirty  # noqa: F401
 from hushai_agent.fsio import append_line
 from hushai_agent.inboxscan import InboxRecord
 from hushai_agent.items import FlexDate, OpenItem
 from hushai_agent.statusfile import StatusRow
-
-
-def apply_brain_step(
-    cfg: InstanceConfig,
-    as_of_date: FlexDate,
-    records: list[InboxRecord] | None = None,
-    dry_run: bool = False,
-    process_when_enabled: bool = True,
-) -> dict[str, Any]:
-    """在 reconcile / digest_apply 加工阶段执行 second-brain 笔记加工、2 链检查与重复判定。"""
-    return brain_process.reconcile_brain_step(
-        cfg,
-        as_of_date=as_of_date,
-        records=records,
-        dry_run=dry_run,
-        process_when_enabled=process_when_enabled,
-    )
 
 
 def apply_model_output(
@@ -247,24 +230,12 @@ def build_closing_plan(
     as_of_date: FlexDate,
     rest_records: list[InboxRecord],
     *,
-    brain_mode: str,
-    resurface: bool,
     commit_msg: str,
     ledger_job: str,
 ) -> dict[str, Any]:
-    """预计算收尾步待处理的第二大脑记录与交换区文件，构造显式收尾计划。"""
-    rec_scope = None if brain_mode == "daily" else rest_records
-    _, pending_ids, pending_ex = brain_process.collect_unprocessed_for_brain(
-        cfg, as_of_date, records=rec_scope
-    )
+    """构造显式收尾计划（晨间简报刷新与 Git 提交；第二大脑不在这条路径上）。"""
     return {
         "brief_required": True,
-        "brain_mode": brain_mode,
-        "brain_record_ids": pending_ids,
-        "brain_exchange_files": pending_ex,
-        "brain_targets": {},
-        "brain_done": False,
-        "resurface": resurface,
         "commit_msg": commit_msg,
         "ledger_job": ledger_job,
     }

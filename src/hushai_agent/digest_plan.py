@@ -6,7 +6,7 @@ import datetime
 import hashlib
 from typing import Any
 
-from hushai_agent import brain_cfg, checkpoint, clock, items, ledger, runner
+from hushai_agent import checkpoint, clock, items, ledger, runner
 from hushai_agent.config import InstanceConfig
 from hushai_agent.config_ext import ExtConfig
 from hushai_agent.digest_apply import build_append_targets_manifest, build_closing_plan
@@ -113,7 +113,6 @@ def execute_digest_commit_plan(
         if degraded
         else [r.line_id for r in records]
     )
-    bcfg = brain_cfg.load_brain_config(inst_cfg)
     plan: dict[str, Any] = {
         "version": 1,
         "kind": "digest",
@@ -164,8 +163,6 @@ def execute_digest_commit_plan(
             inst_cfg,
             as_of_date,
             ai_rest,
-            brain_mode="daily",
-            resurface=bool(bcfg.enabled and bcfg.resurface_enabled),
             commit_msg=f"digest {as_of_str}",
             ledger_job="digest",
         ),

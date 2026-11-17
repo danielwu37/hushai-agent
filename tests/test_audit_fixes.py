@@ -21,10 +21,7 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
 from hushai_agent import (  # noqa: E402
     alerts,
     brain_cfg,
-    brain_items,
-    brain_model,
-    brain_onboard,
-    brain_process,
+    brain_raw,
     brief,
     brief_html,
     capture,
@@ -176,9 +173,11 @@ class TestAuditFixes(unittest.TestCase):
         all_recs = collect.collect(self.cfg, "2026-11-16", include_local_domains=True)
         self.assertEqual({r.domain for r in all_recs}, {"健康", "工作"})
 
-        brain_cfg.set_brain_routine_enabled(self.cfg, "daily", True)
-        raw_items, _, _ = brain_process.collect_unprocessed_for_brain(load_instance_config("demo"), datetime.date(2026, 11, 16))
-        self.assertEqual([it["domain"] for it in raw_items], ["工作"])
+        add_inbox_entry("demo", "steward", "健康", "笔记：体检复查结果待看")
+        add_inbox_entry("demo", "steward", "工作", "笔记：架构评审结论")
+        brain_cfg.set_enabled(self.cfg, True, since="2026-11-16")
+        lines = brain_raw.pending_lines(load_instance_config("demo"), brain_cfg.default_state(), "2026-11-16")
+        self.assertEqual([r.domain for r in lines], ["工作"])
 
     def test_h2_doorkit_permissions_for_claude_and_agy(self) -> None:
         """H-2：claude-settings.json 与 agy-settings.json 均生成 permissions deny + ask。"""
@@ -315,47 +314,6 @@ class TestAuditFixes(unittest.TestCase):
             _, rc_ap = gate.run(cfg, "muse", "ssh", {}, io.BytesIO("- 10:00｜生活｜完成 261116-1：已核对｜产物：无｜待办：无\n".encode("utf-8")))
         self.assertEqual(rc_ap, 0)
         self.assertEqual(items.load(cfg)[0].status, "done")
-
-    def test_b2_m7_l9_l10_second_brain_safety_and_link_rewrite(self) -> None:
-        """B-2 / M-7 / L-9 / L-10：引导去 '0' 与 <=10 分批、邮箱不入 people、状态标 '有出处'、合并改写反链、对账跳过 O(n²)。"""
-        self.assertEqual(brain_onboard._sanitize_onboard_answer("0"), "未填写")
-        brain_cfg.set_brain_routine_enabled(self.cfg, "daily", True)
-        res_ob = brain_onboard.run_onboard(
-            load_instance_config("demo"),
-            answers={"work": "研发", "remember": "0"},
-            initial_items=[f"笔记：初始观察条目 {i} 关于架构设计" for i in range(14)],
-            as_of_date="2026-11-16",
-        )
-        self.assertEqual(res_ob["preferences"]["remember"], "未填写")
-        self.assertLessEqual(res_ob["processed_count"], 10)
-
-        # L-9：邮箱不误识别为 @人名
-        self.assertEqual(brain_items.PERSON_AT_RE.findall("请联系 alice@gmail.com 和 @张三"), ["张三"])
-
-        # L-10：状态标注为 有出处 而非 verified
-        p_out = brain_process.process_raw_items(
-            self.cfg,
-            [{"text": "笔记：状态字段应写有出处而非 verified。", "domain": "工作", "date": "2026-11-16", "source_ref": "L-20261116-laptop-1000-1"}],
-            as_of_date="2026-11-16",
-        )
-        note_rel = next(x["path"] for x in p_out["filed"] if x["type"] == "note")
-        self.assertIn("- 状态：有出处", (self.vault / "hub" / note_rel).read_text(encoding="utf-8"))
-
-        # M-7：合并重复笔记自动更新全库入链（不产生断链）
-        notes_dir = self.vault / "hub" / "notes"
-        (notes_dir / "main.md").write_text("# 主笔记\n\n- 日期：2026-11-16\n- 来源：s1\n\n## 关键事实\n\n- 核心观点\n", encoding="utf-8")
-        (notes_dir / "dup.md").write_text("# 重复笔记\n\n- 日期：2026-11-16\n- 来源：s2\n\n## 关键事实\n\n- 核心观点\n- 新增事实\n", encoding="utf-8")
-        (notes_dir / "ref.md").write_text("# 引用笔记\n\n- 日期：2026-11-16\n- 来源：s3\n\n## 关联笔记\n\n- [重复](dup.md) — 相关\n", encoding="utf-8")
-        m_res = brain_model.merge_duplicate_notes(self.cfg, "notes/main.md", "notes/dup.md", confirm=True)
-        self.assertTrue(m_res["merged"])
-        self.assertGreaterEqual(m_res["rewritten_links"], 1)
-        self.assertIn("(main.md)", (notes_dir / "ref.md").read_text(encoding="utf-8"))
-        self.assertEqual(brain_model.check_brain_links(self.cfg, min_links=0)["broken_links"], [])
-
-        # B-2：reconcile_brain_step 跳过全库重复扫描
-        with mock.patch.object(brain_process, "find_duplicate_notes", side_effect=AssertionError("should not scan all")):
-            rec = brain_process.reconcile_brain_step(self.cfg, "2026-11-16", process_when_enabled=False)
-        self.assertEqual(rec["duplicate_candidates"], [])
 
     def test_l1_and_l6_module_line_limits_and_conflict_filename(self) -> None:
         """L-1 & L-6：全部 src 模块不超过 300 行；正常含 '冲突' 标题文件不被误判为同步冲突副本。"""

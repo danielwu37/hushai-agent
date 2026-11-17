@@ -29,7 +29,7 @@
 | **多端统一记忆底座** | 所有设备与 AI 端通过受限闸门（`gate`）向 `hub/inbox/` 只追加写收件，支持 `line_id` 确定性去重与会话结束自动采录（`capture`）；`local_only`（如健康、私密目录）永不发送给外部模型、永不同步出本机。 |
 | **集中调度与多模型容错** | `digest` / `weekly` 等定时任务支持按档位配置多模型回退链（如 `claude:light,agy:light`），主引擎失败或超预算自动降级切换；常驻管家（`steward`）也可在 `claude` 与 `agy` 之间一键热切换。 |
 | **行动与决策闭环** | 收件变化触发秒级机械对账（`reconcile`），每晚 AI 汇总开放项、状态索引与晨间简报（`brief`），支持命令行与本机 Web 界面（`serve`）直接销账，长期沉淀 `decisions.md` 与 `lessons.md`。 |
-| **个人第二大脑（Second-Brain）** | 自动将收件与长文章加工为 `hub/index.md` 主题索引 + 原子笔记（`notes/`）、带原句/出处的来源档案（`sources/`）、人物承诺档案（`people/`）与项目脉络（`projects/`）；强制每篇新笔记至少关联 2 篇旧笔记；提供**零模型编造、纯笔记引证**的 `hushai brain ask` 问答、每日旧笔记唤醒（`resurface`）与月度维护。 |
+| **个人第二大脑（LLM Wiki 式）** | 借鉴卡帕西 LLM Wiki、Obsidian 与 LifeOS：只把显式交给它的材料（`笔记：`/`来源：`/`人物：`/`项目：` 前缀的收件行、投放到 `hub/exchange/in/入脑/` 的文件）每晚由模型**编译**进一套互相 `[[双链]]` 的项目、主题、人物、来源页，旧页融合更新而不是堆流水；每页带 YAML 属性和逐条出处，`## 我的笔记` 归使用者、AI 不碰；`hub/index.md` 目录 + `hub/daily/` 入脑日志；`hushai brain ask` 本地检索不调模型，`hushai brain lint` 体检断链、重名、隔离领域；整个 `hub/` 可直接当 Obsidian 库打开。 |
 | **零记忆成本交互菜单** | 提供 **`hushai config`** 交互式数字菜单，从时区、AI 适配器、多端接入到第二大脑开关、日常查看待办、手工触发整理，全部按 `1..9` 菜单完成，不用背命令行。 |
 | **后台自愈与零维护** | 每小时静默体检（`heal`）：检查定时器、写权限、磁盘、挂载点与 `tmux` 管家存活，白名单问题自动拉起恢复并 24 小时去重上报；记忆库自身是 Git 仓库，每次整理自动提交可随时回滚。 |
 
@@ -116,14 +116,14 @@ hushai config
   3. AI 适配器与模型调度（claude/agy/fake、回退链、派活、每日预算、自检）
   4. 常驻管家管理与跨端路由（查看/切换 claude|agy/重启、@路由）
   5. 多端接入与同步（rclone 同步、doorkit、systemd 单元、电脑/手机接入速查）
-  6. 第二大脑 (Second-Brain) 设置与操作（开关、引导、Ask、加工、Routine）
+  6. 第二大脑（开关、编译、检索、体检）
   7. 日常查看与待办操作（今日待办、晨间简报、记收件、销待办、批记忆）
   8. 手动触发整理与系统维护（reconcile/digest/weekly/heal/doctor/export/upgrade/uninstall）
   9. 切换或新建实例
   0. 退出
 ```
 
-> 首次启用第二大脑时，进入 **菜单 6 → 第 3 项** 运行「首次运行 5 问引导」，回答你正在做的项目、想记住的事与阅读偏好后，系统即可自动梳理首批条目并生成 `"HERE'S YOUR BRAIN"` 知识地图。第二大脑的所有定时 Routine（`daily`、`weekly`、`resurface`、`monthly`）**默认全部禁用**，可在菜单 6 随时按需单独打开或关闭。
+> 第二大脑默认关闭。菜单 6 → 第 1 项打开后只收**当天起**的新材料（不会把历史积压一次全编）；每晚定时器编译一次，也可在菜单 6 → 第 3 项立即编译。设计见 [docs/second-brain.md](./docs/second-brain.md)。
 
 ---
 
@@ -157,20 +157,19 @@ hushai config
 ```text
 ~/hushai-vault/                    ← 纯文本记忆库（Git 仓库，可整体迁走）
 ├── hub/
-│   ├── index.md                   ← 第二大脑主题索引（每主题一行，硬上限 200 行）
-│   ├── weekly.md                  ← 第二大脑周回顾（反复想法、观点冲突、未兑现承诺）
+│   ├── index.md                   ← 第二大脑目录（按类型分节，每页一行 [[标题]]，≤200 行，代码生成）
 │   ├── inbox/                     ← 多端统一收件：按日、按端分文件，只追加不覆盖
-│   ├── exchange/                  ← 跨端文章/大文件交换区（in/ 与 out/）
+│   ├── exchange/                  ← 跨端文章/大文件交换区（in/ 与 out/；in/入脑/ 是第二大脑投放文件夹）
 │   ├── today.md                   ← 今日待办（最多 7 条）
 │   ├── open-items.md              ← 全量开放追踪项
 │   ├── status.md / status-index.md← 项目近况及索引
 │   ├── profile.md                 ← 个人画像（必须经你批准才会写入）
 │   ├── decisions.md / lessons.md  ← 长期决策与教训档案
-│   ├── notes/                     ← 加工后的原子笔记（至少 2 条互链）
-│   ├── sources/                   ← 文章/视频/书籍来源档案与带出处原句
-│   ├── people/                    ← 人物关系、聊过什么与承诺兑现记录
-│   ├── projects/                  ← 项目目标、开放问题、决定原因与下一步
-│   ├── daily/                     ← 按日归档的每日笔记（YYYY-MM-DD.md）
+│   ├── projects/                  ← 第二大脑：项目页（目标、要点、待跟进，带出处）
+│   ├── notes/                     ← 第二大脑：主题页（概念、方法、政策、长期关注）
+│   ├── people/                    ← 第二大脑：人物页（身份、关系、说过做过的事，不写评价）
+│   ├── sources/                   ← 第二大脑：原件摘要页（每份投放文件一页）
+│   ├── daily/                     ← 第二大脑：入脑日志（YYYY-MM-DD.md，每批一行带 [[链接]]）
 │   └── reports/                   ← 日报、周报、晨间简报与月度维护清单
 └── domains/                       ← 按领域划分的材料目录（health 默认仅本机，永不外发）
 ```
@@ -197,11 +196,14 @@ hushai sync --instance my --direction both
 hushai heal --instance my
 hushai doctor --instance my
 
-# 个人第二大脑（Second-Brain）
-hushai brain onboard --instance my --interactive
-hushai brain ask "为什么当初决定采用纯标准库方案？" --instance my
-hushai brain process --instance my
-hushai brain enable all --instance my    # 手动启用第二大脑定时 routine
+# 个人第二大脑（LLM Wiki 式）
+hushai brain enable --instance my                 # 打开，只收今天起的新材料
+hushai inbox add --instance my --door office --domain 工作 --did "笔记：……"   # 入脑：写前缀收件行
+hushai brain add ~/Downloads/文章.md --instance my  # 入脑：放进投放文件夹
+hushai brain ingest --instance my                 # 立即编译（定时器每晚 22:30 自动跑）
+hushai brain ask "中转住宿政策现在什么口径？" --instance my   # 本地检索，不调模型
+hushai brain lint --instance my                   # 体检：断链、重名、孤页、待复核、隔离领域
+hushai brain units --out ~/units --instance my    # 生成编译定时器（只生成不安装）
 
 # 卸载与环境重置（默认永久保留 vault 记忆库；也可在 hushai config -> 8 -> 8 交互完成）
 hushai uninstall --instance my --with-systemd            # 先演练预览，加 --yes 只删配置/状态/systemd 并保留 vault；真要连数据销毁需加 --delete-vault
@@ -218,7 +220,7 @@ hushai uninstall --instance my --with-systemd            # 先演练预览，加
 - **Claude 远程会话与宿主机共用账号**：`claude remote-control` 不支持 `--setting-sources`，框架用 `claudeMdExcludes` 挡住用户级 `CLAUDE.md`，权限与钩子放在 vault 的 `.claude/settings.local.json`；用户级 `~/.claude/settings.json` 仍会生效。
 - **额度用尽不自动切换模型**：remote-control 下测不到真实额度信号，自动切换已移除；需要时手动 `hushai steward use agy|claude`（会重启管家、打断当前对话）。
 - **ChatGPT 等封闭云端应用**尚未开放本地闸门直连，现阶段需通过复制投递至 `hub/exchange/in/` 或由管家转存。
-- **Second-Brain 所有周期 Routine 默认处于禁用状态**：安装与升级不会擅自开启后台自动写入，也不会未经 `--yes` 同意擅自删除或合并任何已有笔记。启用 `monthly` 或修改第二大脑时间参数后，需在菜单 `5` 或 `hushai install units --with-brain` 重新生成并启用对应 systemd 定时器；人物与项目档案按显式 `人物：`/`项目：`/`@姓名` 前缀触发提取。
+- **第二大脑默认关闭，只收显式材料**：不加前缀的收件行、交换区里的其他文件都不会进第二大脑；编译要调模型（`[jobs] brain`，没配借 `digest`），有单独的每日预算，不占主预算；它从不删页、不改名，`locked: true` 的页和 `## 我的笔记` 以下不会被改；页面状态只有「有出处」，「已核实」须使用者用 `hushai brain verify` 标。定时器需管理员用 `hushai brain units` 生成后自行安装。
 
 ---
 
@@ -226,7 +228,7 @@ hushai uninstall --instance my --with-systemd            # 先演练预览，加
 
 - [使用者手册](./docs/user-guide.md) | [安装与运维手册](./docs/admin-guide.md)
 - [多端接入规范（doors / gate）](./docs/doors.md)
-- [Second-Brain 集成设计](./docs/second-brain.md) | [核心设计](./docs/design.md) | [文件格式规范](./docs/spec.md)
+- [第二大脑设计（LLM Wiki 式）](./docs/second-brain.md) | [核心设计](./docs/design.md) | [文件格式规范](./docs/spec.md)
 - [更新日志](./CHANGELOG.md)
 
 运行全量测试（不依赖外部网络或真实 API 密钥）：

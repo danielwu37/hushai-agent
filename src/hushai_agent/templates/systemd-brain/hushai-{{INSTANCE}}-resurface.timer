@@ -1,9 +1,0 @@
-[Unit]
-Description=hushAi-agent {{INSTANCE}}: second-brain daily resurface timer
-
-[Timer]
-OnCalendar=*-*-* {{BRAIN_RESURFACE_TIME}}:00 {{TZ}}
-Persistent=true
-
-[Install]
-WantedBy=timers.target

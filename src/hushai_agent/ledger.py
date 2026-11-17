@@ -112,8 +112,15 @@ def read(
     return rows
 
 
-def calls_today(cfg: InstanceConfig, only_job: str | None = None, exclude_job: str | None = None) -> int:
-    """统计实例时区当天（按 clock.today）的模型调用（kind == 'call'）行数；可只数或排除某个任务。"""
+# 有自己预算的任务：会话采集与第二大脑编译，不占主预算
+SEPARATE_BUDGET_JOBS = ("capture", "brain")
+
+
+def calls_today(
+    cfg: InstanceConfig, only_job: str | None = None, exclude_job: str | tuple[str, ...] | None = None
+) -> int:
+    """统计实例时区当天（按 clock.today）的模型调用（kind == 'call'）行数；可只数某个任务或排除一个或几个任务。"""
+    excluded = (exclude_job,) if isinstance(exclude_job, str) else tuple(exclude_job or ())
     target_date = clock.today(cfg)
     tz_name = getattr(cfg, "timezone", DEFAULT_TIMEZONE)
     tz = ZoneInfo(tz_name)
@@ -122,7 +129,7 @@ def calls_today(cfg: InstanceConfig, only_job: str | None = None, exclude_job: s
     for row in read(cfg):
         if row.get("kind") != "call":
             continue
-        if (only_job and row.get("job") != only_job) or (exclude_job and row.get("job") == exclude_job):
+        if (only_job and row.get("job") != only_job) or (row.get("job") in excluded):
             continue
         ts_raw = row.get("ts")
         if not isinstance(ts_raw, str) or not ts_raw.strip():

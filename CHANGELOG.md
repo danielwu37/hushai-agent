@@ -8,7 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- 后续新增改动先写在此处，下个版本发布时自动归档至版本章节 -->
 
+### Changed
+- **第二大脑重做为 LLM Wiki 式（2026-11-17，`docs/second-brain.md` v2）**：借鉴卡帕西 LLM Wiki（原料 → 模型维护的维基 → 规则；ingest / query / lint）、Obsidian（文件名即标题、`[[双链]]`、YAML 属性、日记页）与 LifeOS（类型化档案、重温、体检）。只收显式材料：`笔记：`/`来源：`/`人物：`/`项目：`/`入脑：` 前缀收件行（`[brain] since` 之后）、`hub/exchange/in/入脑/` 投放文件、各端交换区 `入脑-*` 文件；模型返回 JSON，由代码把内容融合进 `projects/`、`notes/`、`people/`、`sources/` 页（按标题/别名合并、来源只增不减、`## 我的笔记` 与 `locked: true` 页不改、「已核实」只能 `hushai brain verify` 标）；`index.md` 目录与 `daily/<日期>.md` 入脑日志由代码生成。新模块 `brain_page`、`brain_raw`、`brain_ingest`、`brain_write`、`brain_lint`，重写 `brain_cfg`、`brain_ask`、`cli_brain`；命令 `hushai brain enable|disable|ingest|ask|lint|status|add|verify|units`。
+- **第二大脑离开对账与汇总路径**：`reconcile`、`digest`、`weekly`、检查点收尾不再含第二大脑步骤；编译由新定时器 `hushai-<实例>-brain.{service,timer}`（默认 22:30）或手动触发，模型调用不持 `runner.lock`，落盘时短暂持锁并在释锁后排空对账积压。
+- **单独预算**：`[brain] max_daily_calls`（默认 12）只数 `brain` 调用；主预算改为不数 `capture` 与 `brain`（`ledger.SEPARATE_BUDGET_JOBS`）。
+- **晨间简报**新增「第二大脑」一节（昨天以来新入脑的页 + 一页旧页重温，隔离领域不出现）；`doctor` 的 `second-brain` 一项改为 `brain lint` 结论；`hushai config` 菜单 6 改为开关、参数、立即编译、检索、体检。
+
 ### Removed
+- **旧版第二大脑（v1）**：`brain_collect`、`brain_daily`、`brain_docs`、`brain_index`、`brain_items`、`brain_links`、`brain_maint`、`brain_merge`、`brain_model`、`brain_onboard`、`brain_process`、`brain_routines`、`checkpoint_verify_brain` 与 8 个旧单元模板（`brain-daily`、`brain-weekly`、`resurface`、`monthly`）；`[brain]` 旧键（`daily_enabled` 等）读取时忽略。`hushai brain disable` 会清配置目录里的新旧单元并列出系统目录残留。
 - **额度用尽自动切 agy（2026-11-17）**：`steward_online` 不再识别额度字样、不再自动切换和重启管家；需要时手动 `hushai steward use agy|claude`。
 
 ### Added

@@ -1,4 +1,4 @@
-"""P0 / O1 故障注入与并发韧性测试：lock-busy 补跑、检查点崩溃恢复、目标文件核验与 brain 锁保护。"""
+"""P0 / O1 故障注入与并发韧性测试：lock-busy 补跑、检查点崩溃恢复、目标文件核验与第二大脑持锁后排空。"""
 
 from __future__ import annotations
 
@@ -23,10 +23,6 @@ for p in (str(SRC_DIR), str(TESTS_DIR)):
         sys.path.insert(0, p)
 
 from hushai_agent import (  # noqa: E402
-    brain_cfg,
-    brain_model,
-    brain_process,
-    brain_routines,
     brief,
     brief_html,
     candidates,
@@ -41,7 +37,6 @@ from hushai_agent import (  # noqa: E402
     routing,
     validate,
 )
-from hushai_agent.brain_cfg import load_brain_state, save_brain_state  # noqa: E402
 from hushai_agent.config import load_instance_config  # noqa: E402
 from hushai_agent.config_ext import load_ext  # noqa: E402
 from hushai_agent.daily_state import load_daily_accumulated  # noqa: E402
@@ -52,7 +47,7 @@ from hushai_agent.vault import add_inbox_entry, format_inbox_line, init_instance
 
 
 class TestP0O1Resilience(unittest.TestCase):
-    """覆盖 O1 的并发 dirty-flag 补跑、多阶段崩溃零重复恢复、检查点篡改核验与 brain 锁防并发。"""
+    """覆盖 O1 的并发 dirty-flag 补跑、多阶段崩溃零重复恢复、检查点篡改核验与第二大脑持锁后排空。"""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -117,7 +112,7 @@ class TestP0O1Resilience(unittest.TestCase):
         return recs[-1].line_id
 
     def _seed_digest_scenario(self, date_str: str = "2026-03-02") -> list[str]:
-        """构造涵盖 open-items 归档、status-archive、corrections、candidates 与 brain 的完整场景。"""
+        """构造涵盖 open-items 归档、status-archive、corrections、candidates 的完整场景。"""
         (self.vault / "hub" / "open-items.md").write_text(
             "# 开放项\n"
             "- [ ] 260301-1｜交水费｜owner=user｜sched=2026-03-02｜due=-｜domain=生活｜verified=2026-03-01｜src=-\n"
@@ -289,7 +284,6 @@ class TestP0O1Resilience(unittest.TestCase):
         """2. before_cursor 阶段崩溃后重入：不重复调模型，不重复追加更正/归档/候选/画像，日报不双倍计数。"""
         line_ids = self._seed_digest_scenario("2026-03-02")
         cfg = self.cfg()
-        brain_cfg.set_brain_routine_enabled(cfg, "daily", True)
 
         def crash_before_cursor(stage: str) -> None:
             if stage == "before_cursor":
@@ -344,7 +338,6 @@ class TestP0O1Resilience(unittest.TestCase):
     def test_03_tampered_checkpoint_still_verifies_and_repairs_actual_disk_targets(self) -> None:
         """3. 篡改 JSON checkpoint 为 stage=closing_done 与 brain_done=True 时，恢复仍核验并修复真实磁盘文件。"""
         line_ids = self._seed_digest_scenario("2026-03-02")
-        brain_cfg.set_brain_routine_enabled(self.cfg(), "daily", True)
 
         def crash_before_cursor(stage: str) -> None:
             if stage == "before_cursor":
@@ -371,9 +364,6 @@ class TestP0O1Resilience(unittest.TestCase):
         if daily_json.is_file():
             daily_json.unlink()
         (self.state_dir / "digested.jsonl").unlink(missing_ok=True)
-        b_state = load_brain_state(self.cfg())
-        b_state["processed_inbox_ids"] = []
-        save_brain_state(self.cfg(), b_state)
 
         reconcile.run_mechanical_only(self.cfg())
 
@@ -385,10 +375,9 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertTrue((self.vault / "hub" / "reports" / "daily-2026-03-02.md").is_file())
         self.assertIn(line_ids[0], cursor.load_ids(self.cfg()))
         self.assertEqual(load_daily_accumulated(self.state_dir, "2026-03-02")["corrections_added"], 1)
-        self.assertIn(line_ids[0], load_brain_state(self.cfg()).get("processed_inbox_ids", []))
 
     def test_04_crash_after_cursor_completes_closing_steps_on_reconcile_and_heal(self) -> None:
-        """4. 游标推进后、收尾前崩溃（after_cursor）：reconcile 与 heal 均能补全 brief / brain / git commit。"""
+        """4. 游标推进后、收尾前崩溃（after_cursor）：reconcile 与 heal 均能补全 brief / git commit。"""
         git_vault = self.base / "git_vault"
         init_instance("gitdemo", git_vault, no_git=False)
         subprocess.run(["git", "-C", str(git_vault), "config", "user.email", "t@example.com"], check=True)
@@ -401,7 +390,6 @@ class TestP0O1Resilience(unittest.TestCase):
         ).replace("digest =", "digest = fk:light")
         g_cfg_file.write_text(txt, encoding="utf-8")
         gcfg = load_instance_config("gitdemo")
-        brain_cfg.set_brain_routine_enabled(gcfg, "daily", True)
 
         add_inbox_entry("gitdemo", "laptop", "工作", "人物：王敏｜架构师，今天讨论了测试策略，承诺本周发出计划")
         g_line_id = next(r.line_id for r in iter_inbox_lines(git_vault / "hub" / "inbox"))
@@ -447,7 +435,6 @@ class TestP0O1Resilience(unittest.TestCase):
         reconcile.run_mechanical_only(load_instance_config("gitdemo"))
         self.assertFalse(checkpoint.has_pending(gcfg))
         self.assertIn("发出测试计划", (git_vault / "hub" / "reports" / "morning-brief.md").read_text(encoding="utf-8"))
-        self.assertIn(g_line_id, load_brain_state(gcfg).get("processed_inbox_ids", []))
         dirty_after = subprocess.run(
             ["git", "-C", str(git_vault), "status", "--porcelain"], capture_output=True, text=True, check=True
         ).stdout.strip()
@@ -528,52 +515,8 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertEqual(routed[0]["result"], "ok")
         self.assertFalse(checkpoint.has_pending(self.cfg()))
 
-    def test_06_brain_routines_lock_conflict_and_process_source_ref_idempotency(self) -> None:
-        """6. 独立 brain_routines 受 runner.lock 互斥保护；brain_process 崩溃重入按 source_ref 去重。"""
-        cfg = self.cfg()
-        brain_cfg.set_brain_routine_enabled(cfg, "all", True)
-
-        with lock.runner_lock(cfg):
-            for fn in (
-                lambda: brain_routines.run_daily_brain(cfg, as_of="2026-03-02"),
-                lambda: brain_routines.run_weekly_brain(cfg, as_of="2026-03-08"),
-                lambda: brain_routines.run_resurface(cfg, as_of="2026-03-02"),
-                lambda: brain_routines.run_monthly_maintenance(cfg, as_of="2026-03-31"),
-                lambda: brain_process.process_inbox_to_brain(cfg, as_of_date="2026-03-02"),
-            ):
-                with self.assertRaises(lock.LockBusy):
-                    fn()
-
-        # 模拟 brain_process 已写入 sources/ 与 notes/ 但尚未更新 brain-state.json 游标即崩溃
-        add_inbox_entry(
-            "demo",
-            "laptop",
-            "学习",
-            "来源：https://example.com/always-on 关于持久化检查点的架构实践要点",
-        )
-        added_line_id = next(r.line_id for r in iter_inbox_lines(self.vault / "hub" / "inbox"))
-        with mock.patch.object(
-            brain_process, "save_brain_state", side_effect=RuntimeError("crash before brain-state save")
-        ):
-            with self.assertRaises(RuntimeError):
-                brain_process.process_inbox_to_brain(self.cfg(), as_of_date="2026-03-02")
-
-        notes_before = sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md"))
-        sources_before = sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md"))
-        self.assertGreaterEqual(len(notes_before), 1)
-        self.assertGreaterEqual(len(sources_before), 1)
-        self.assertEqual(load_brain_state(self.cfg()).get("processed_inbox_ids", []), [])
-
-        res2 = brain_process.process_inbox_to_brain(self.cfg(), as_of_date="2026-03-02")
-        notes_after = sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md"))
-        sources_after = sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md"))
-        self.assertEqual(notes_after, notes_before)
-        self.assertEqual(sources_after, sources_before)
-        self.assertEqual(res2.get("filed"), [])
-        self.assertIn(added_line_id, load_brain_state(self.cfg()).get("processed_inbox_ids", []))
-
-    def test_07_reconcile_crash_before_cursor_and_monthly_unlock_drain(self) -> None:
-        """7. reconcile 在 before_cursor 崩溃后恢复零重复；monthly 持锁释放后自动排空并发机械事件。"""
+    def test_07_reconcile_crash_before_cursor_and_brain_unlock_drain(self) -> None:
+        """7. reconcile 在 before_cursor 崩溃后恢复零重复；第二大脑落盘持锁释放后自动排空并发机械事件。"""
         (self.vault / "hub" / "open-items.md").write_text(
             "# 开放项\n"
             "- [ ] 260301-1｜交水费｜owner=user｜sched=2026-03-02｜due=-｜domain=生活｜verified=2026-03-01｜src=-\n"
@@ -599,31 +542,41 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertEqual(corr_txt.count("电费表号是 8801"), 1)
         self.assertEqual(load_daily_accumulated(self.state_dir, "2026-03-02")["corrections_added"], 1)
 
-        # monthly 持锁期间抵达的机械动作在释锁后自动排空
-        brain_cfg.set_brain_routine_enabled(self.cfg(), "monthly", True)
+        # 第二大脑落盘持锁期间抵达的机械动作在释锁后自动排空
+        from hushai_agent import brain_cfg, brain_ingest, brain_write
+
+        txt = self.cfg_file.read_text(encoding="utf-8").replace("[jobs]", "[jobs]\nbrain = fk:light")
+        self.cfg_file.write_text(txt, encoding="utf-8")
+        brain_cfg.set_enabled(self.cfg(), True, since="2026-03-02")
+        self._write_raw_inbox_line("2026-03-02", "laptop", "10:30", "工作", "笔记：月报改为每月 5 日前发")
+        (self.fixtures / "brain-2026-03-02.json").write_text(json.dumps({"pages": [{
+            "title": "月报", "type": "project", "domain": "工作", "summary": "每月 5 日前发",
+            "body": "月报每月 5 日前发。", "refs": [1]}], "log": "记月报"}, ensure_ascii=False), encoding="utf-8")
         m_locked = threading.Event()
         m_release = threading.Event()
-        orig_find_dup = brain_routines.find_duplicate_notes
+        orig_apply = brain_write.apply_result
 
-        def slow_find_dup(*args, **kwargs):
+        def slow_apply(*args, **kwargs):
             m_locked.set()
             if not m_release.wait(timeout=5.0):
                 raise TimeoutError("m_release timeout")
-            return orig_find_dup(*args, **kwargs)
+            return orig_apply(*args, **kwargs)
 
         errs: list[BaseException] = []
 
         def run_monthly() -> None:
             try:
-                with mock.patch.object(brain_routines, "find_duplicate_notes", side_effect=slow_find_dup):
-                    brain_routines.run_monthly_maintenance(self.cfg(), as_of="2026-03-31", confirm_merge=False)
+                with mock.patch.object(brain_write, "apply_result", side_effect=slow_apply):
+                    res = brain_ingest.run_ingest(self.cfg())
+                if res.get("done") != 1:
+                    raise AssertionError(res)
             except BaseException as exc:  # pragma: no cover
                 errs.append(exc)
 
         th = threading.Thread(target=run_monthly, daemon=True)
         th.start()
         try:
-            self.assertTrue(m_locked.wait(timeout=5.0))
+            self.assertTrue(m_locked.wait(timeout=5.0), errs)
             self._write_raw_inbox_line("2026-03-02", "laptop", "11:00", "工作", "完成 260301-2：月报已发")
             busy = reconcile.run_mechanical_only(self.cfg())
             self.assertEqual(busy.get("skipped"), "lock-busy")
@@ -636,10 +589,9 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertEqual(done_map["260301-2"], "done")
         self.assertFalse(lock.has_dirty(self.cfg(), "mechanical"))
 
-    def test_08_b3_tampered_brain_done_html_corruption_and_append_manifest(self) -> None:
-        """8. brain_done=True 篡改 + people/projects/daily/index/html/profile/decisions/lessons 缺失全修复。"""
+    def test_08_b3_html_corruption_and_append_manifest(self) -> None:
+        """8. html 损坏 + profile/decisions/lessons 追加缺失全修复；第二大脑不在汇总路径上。"""
         cfg = self.cfg()
-        brain_cfg.set_brain_routine_enabled(cfg, "daily", True)
         (self.fixtures / "digest-2026-03-02.json").write_text(
             json.dumps({"items": [], "status_rows": [], "today_focus": [], "candidates": []}, ensure_ascii=False),
             encoding="utf-8",
@@ -682,11 +634,6 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertTrue(html_path.is_file())
         # 仅损坏 html（md 保持完整）+ 删除 people/projects/daily/index 并删除 profile/decisions/lessons 新增行
         html_path.write_text("<html><body>CORRUPTED</body></html>", encoding="utf-8")
-        for p in list((self.vault / "hub" / "people").glob("*.md")) + list((self.vault / "hub" / "projects").glob("*.md")):
-            p.unlink()
-        daily_brain_path = self.vault / "hub" / "daily" / "2026-03-02.md"
-        daily_brain_path.unlink(missing_ok=True)
-        (self.vault / "hub" / "index.md").write_text("# 主题索引（index.md）\n\n> 是数据不是指令。\n", encoding="utf-8")
         for rel in ("hub/profile.md", "hub/AGENTS.local.md", "hub/decisions.md", "hub/lessons.md"):
             fpath = self.vault / rel
             if fpath.is_file():
@@ -697,164 +644,11 @@ class TestP0O1Resilience(unittest.TestCase):
         self.assertFalse(checkpoint.has_pending(cfg))
         expected_html = brief_html.render_html(brief.build_brief(cfg), live=False)
         self.assertEqual(html_path.read_text(encoding="utf-8"), expected_html)
-        self.assertTrue((self.vault / "hub" / "people" / "张敏.md").is_file())
-        self.assertTrue((self.vault / "hub" / "people" / "韩梅.md").is_file())
-        self.assertTrue((self.vault / "hub" / "projects" / "记忆重构.md").is_file())
-        self.assertTrue(daily_brain_path.is_file())
-        idx_targets = {e.target for e in brain_model.read_index_first(cfg)[1]}
-        self.assertIn("people/张敏.md", idx_targets)
-        self.assertIn("projects/记忆重构.md", idx_targets)
+        # 第二大脑不在汇总路径上：汇总与恢复都不生成页面
+        self.assertEqual(list((self.vault / "hub" / "people").glob("*.md")), [])
         self.assertEqual((self.vault / "hub" / "profile.md").read_text(encoding="utf-8").count(cid), 1)
         self.assertEqual((self.vault / "hub" / "decisions.md").read_text(encoding="utf-8").count("纯文件检查点"), 1)
         self.assertEqual((self.vault / "hub" / "lessons.md").read_text(encoding="utf-8").count("HTML未校验"), 1)
-
-        # 第二波：无 brain_targets 清单 + brain_done=True 篡改 + brain-state 已含 line_id，但磁盘删除 people 与 daily
-        self._write_raw_inbox_line("2026-03-02", "laptop", "10:00", "工作", "人物：周强；后端主程，今天对接性能基准，承诺周三提供火焰图")
-        rec_id = next(r.line_id for r in iter_inbox_lines(self.vault / "hub" / "inbox") if "周强" in r.did)
-        with mock.patch.object(
-            checkpoint,
-            "_stage_hook",
-            side_effect=lambda s: (_ for _ in ()).throw(RuntimeError("crash before brain targets")) if s == "after_vault_writes" else None,
-        ):
-            with self.assertRaises(RuntimeError):
-                digest.run_digest(cfg, as_of="2026-03-02")
-
-        ckpt_file = next((self.state_dir / "checkpoints").glob("*.json"))
-        raw = json.loads(ckpt_file.read_text(encoding="utf-8"))
-        raw["stage"] = "closing_done"
-        raw["closing"]["brain_done"] = True
-        raw["closing"]["brain_targets"] = {}
-        ckpt_file.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        # 故意把 line_id 写进 brain-state.json 游标，同时删掉周强文件与 daily
-        b_state = load_brain_state(cfg)
-        b_state["processed_inbox_ids"] = list(dict.fromkeys([*b_state.get("processed_inbox_ids", []), rec_id]))
-        save_brain_state(cfg, b_state)
-        (self.vault / "hub" / "people" / "周强.md").unlink(missing_ok=True)
-        daily_brain_path.unlink(missing_ok=True)
-
-        reconcile.run_mechanical_only(cfg)
-        self.assertTrue((self.vault / "hub" / "people" / "周强.md").is_file())
-        self.assertIn(rec_id, (self.vault / "hub" / "people" / "周强.md").read_text(encoding="utf-8"))
-        self.assertTrue(daily_brain_path.is_file())
-        self.assertIn("people/周强.md", {e.target for e in brain_model.read_index_first(cfg)[1]})
-
-    def test_09_real_subprocess_sigkill_and_people_projects_idempotency(self) -> None:
-        """9. 真实子进程 os.kill(SIGKILL) 中断恢复：people/projects/sources/notes 零重复且通过 validate_vault。"""
-        cfg = self.cfg()
-        brain_cfg.set_brain_routine_enabled(cfg, "all", True)
-        (self.fixtures / "digest-2026-03-02.json").write_text(
-            json.dumps({"items": [], "status_rows": [], "today_focus": [], "candidates": []}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        self._write_raw_inbox_line("2026-03-02", "laptop", "09:00", "工作", "人物：赵云；安全工程师，讨论沙箱边界，承诺明天给审计脚本")
-        self._write_raw_inbox_line("2026-03-02", "laptop", "09:01", "工作", "项目：零trust沙箱；目标：构建进程级隔离。需要验证信号安全。")
-        self._write_raw_inbox_line("2026-03-02", "laptop", "09:02", "学习", "来源：https://example.com/sigkill @陈平 关于强杀恢复设计")
-
-        ready_flag = self.base / "sigkill_ready.flag"
-        child_code = (
-            "from pathlib import Path\n"
-            "import time\n"
-            "from unittest import mock\n"
-            "from hushai_agent import brain_process\n"
-            "from hushai_agent.config import load_instance_config\n"
-            f"flag = Path({str(ready_flag)!r})\n"
-            "def hang_on_state_save(c, state):\n"
-            "    flag.write_text('ready', encoding='utf-8')\n"
-            "    time.sleep(30)\n"
-            "with mock.patch.object(brain_process, 'save_brain_state', side_effect=hang_on_state_save):\n"
-            "    brain_process.process_inbox_to_brain(load_instance_config('demo'), as_of_date='2026-03-02')\n"
-        )
-        proc = subprocess.Popen(
-            [sys.executable, "-c", child_code],
-            env={**os.environ, "PYTHONPATH": f"{SRC_DIR}:{TESTS_DIR}"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            deadline = time.monotonic() + 8.0
-            while not ready_flag.is_file() and time.monotonic() < deadline:
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.05)
-            if not ready_flag.is_file():
-                err_txt = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-                self.fail(f"ready_flag not written in time; rc={proc.poll()} stderr={err_txt}")
-            os.kill(proc.pid, signal.SIGKILL)
-            rc = proc.wait(timeout=5.0)
-            self.assertEqual(rc, -signal.SIGKILL)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5.0)
-            for pipe in (proc.stdout, proc.stderr):
-                if pipe is not None:
-                    pipe.close()
-
-        # 子进程已在写出 people/projects/sources/notes 之后、保存 brain-state.json 之前被 SIGKILL
-        people_txt_before = (self.vault / "hub" / "people" / "赵云.md").read_text(encoding="utf-8")
-        proj_txt_before = (self.vault / "hub" / "projects" / "零trust沙箱.md").read_text(encoding="utf-8")
-        sources_before = sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md"))
-        notes_before = sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md"))
-        self.assertEqual(people_txt_before.count("讨论沙箱边界"), 1)
-        self.assertIn("需要验证信号安全", proj_txt_before)
-        self.assertEqual(load_brain_state(cfg).get("processed_inbox_ids", []), [])
-
-        # 二次重启恢复：zero duplicates 且游标推进
-        res2 = brain_process.process_inbox_to_brain(self.cfg(), as_of_date="2026-03-02")
-        self.assertEqual(res2.get("filed"), [])
-        self.assertEqual(sorted(p.name for p in (self.vault / "hub" / "sources").glob("*.md")), sources_before)
-        self.assertEqual(sorted(p.name for p in (self.vault / "hub" / "notes").glob("*.md")), notes_before)
-        self.assertEqual((self.vault / "hub" / "people" / "赵云.md").read_text(encoding="utf-8"), people_txt_before)
-        self.assertEqual((self.vault / "hub" / "projects" / "零trust沙箱.md").read_text(encoding="utf-8"), proj_txt_before)
-        self.assertEqual(len(load_brain_state(cfg).get("processed_inbox_ids", [])), 3)
-
-        # 第二次真实 SIGKILL：在 digest before_cursor 强杀后由父进程恢复
-        self._write_raw_inbox_line("2026-03-02", "laptop", "11:00", "更正", "门禁卡编号是 A77")
-        digest_flag = self.base / "digest_sigkill.flag"
-        digest_code = (
-            "from pathlib import Path\n"
-            "import time\n"
-            "from unittest import mock\n"
-            "from hushai_agent import checkpoint, digest\n"
-            "from hushai_agent.config import load_instance_config\n"
-            f"flag = Path({str(digest_flag)!r})\n"
-            "def hang_hook(stage):\n"
-            "    if stage == 'before_cursor':\n"
-            "        flag.write_text('ready', encoding='utf-8')\n"
-            "        time.sleep(30)\n"
-            "with mock.patch.object(checkpoint, '_stage_hook', side_effect=hang_hook):\n"
-            "    digest.run_digest(load_instance_config('demo'), as_of='2026-03-02')\n"
-        )
-        proc2 = subprocess.Popen(
-            [sys.executable, "-c", digest_code],
-            env={**os.environ, "PYTHONPATH": f"{SRC_DIR}:{TESTS_DIR}"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            deadline = time.monotonic() + 8.0
-            while not digest_flag.is_file() and time.monotonic() < deadline:
-                if proc2.poll() is not None:
-                    break
-                time.sleep(0.05)
-            if not digest_flag.is_file():
-                err_txt = proc2.stderr.read().decode(errors="replace") if proc2.stderr else ""
-                self.fail(f"digest_flag not written in time; rc={proc2.poll()} stderr={err_txt}")
-            os.kill(proc2.pid, signal.SIGKILL)
-            self.assertEqual(proc2.wait(timeout=5.0), -signal.SIGKILL)
-        finally:
-            if proc2.poll() is None:
-                proc2.kill()
-                proc2.wait(timeout=5.0)
-            for pipe in (proc2.stdout, proc2.stderr):
-                if pipe is not None:
-                    pipe.close()
-
-        self.assertTrue(checkpoint.has_pending(self.cfg()))
-        reconcile.run_mechanical_only(self.cfg())
-        self.assertFalse(checkpoint.has_pending(self.cfg()))
-        self.assertEqual((self.vault / "hub" / "reports" / "corrections.md").read_text(encoding="utf-8").count("门禁卡编号是 A77"), 1)
-        self.assertTrue(validate.validate_vault(self.vault)["ok"])
 
     def test_10_corrupt_checkpoint_quarantine_and_multiprocess_contention(self) -> None:
         """10. 损坏 checkpoint 隔离到 corrupt-* 不阻塞后续运行；多进程并发竞争零丢失零重复。"""
