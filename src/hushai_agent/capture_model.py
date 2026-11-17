@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from hushai_agent import runner
+from hushai_agent.brain_raw import PREFIX_RE
 from hushai_agent.capture import _extract_text_from_content, _is_human_turn
-from hushai_agent.config import InstanceConfig
+from hushai_agent.config import InstanceConfig, is_local_only_domain
 from hushai_agent.config_ext import load_ext
 
 JOB = "capture"
@@ -22,6 +23,8 @@ DID_MAX = 60
 TODO_MAX = 40
 MODEL_TIMEOUT = 60
 LOCK_WAIT = 5.0
+# 值得长期记住的内容由模型标类别，记成带入脑前缀的收件行，当晚由第二大脑编译（2026-11-17 起）
+BRAIN_KINDS = ("笔记", "人物", "项目")
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -30,6 +33,7 @@ SCHEMA: dict[str, Any] = {
         "domain": {"type": "string"},
         "did": {"type": "string"},
         "todo": {"type": "string"},
+        "brain": {"type": "string"},
     },
     "required": ["record", "domain", "did", "todo"],
 }
@@ -82,6 +86,9 @@ def make_validator(cfg: InstanceConfig):
         if data["record"] and not did:
             return None, "record 为真但 did 为空"
         todo = _clean(data.get("todo"), TODO_MAX) or "无"
+        kind = str(data.get("brain") or "").strip()
+        if data["record"] and kind in BRAIN_KINDS and not is_local_only_domain(domain, cfg):
+            did = f"{kind}：{PREFIX_RE.sub('', did)}"
         return {"record": data["record"], "domain": domain, "did": did, "todo": todo}, None
 
     return _validate

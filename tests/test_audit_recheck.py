@@ -103,11 +103,12 @@ class TestAuditRecheck(unittest.TestCase):
         deny_cmds = [
             "rm -rf /", "rm -rf ~/x", "rm -rf hub", "rm -r hub/notes", "rm -fr hub", "find . -name x -delete",
             "git push --force origin master", "git reset --hard HEAD~1", "mkfs.ext4 /dev/sda", "dd if=/dev/zero of=/dev/sda",
-            "systemctl stop hushai-wu-steward.service", "systemctl disable x", "mail -s hi a@b.c", "sendmail a@b.c", "shutdown now", "reboot",
+            "mail -s hi a@b.c", "sendmail a@b.c", "shutdown now", "reboot",
         ]
         ask_cmds = [
             "rm hub/today.md", "git rm hub/a.md", "git push origin master", "curl https://x", "wget https://x",
             "scp a b:", "rsync a b:", "rclone copy a b:", "ssh host", "systemctl restart x",
+            "systemctl stop hushai-wu-steward.service", "systemctl disable x", "sudo cp a /etc/systemd/system/",
         ]
         for cmd in deny_cmds:
             self.assertTrue(hit(doorkit.DENY_RULES, "Bash", cmd), cmd)
@@ -118,13 +119,17 @@ class TestAuditRecheck(unittest.TestCase):
         self.assertIn("WebFetch", doorkit.ASK_RULES)
 
         path_rules = [r for r in doorkit.DENY_RULES if r.startswith(("Write(", "Edit("))]
-        self.assertEqual(len(path_rules), 8)
+        self.assertEqual(len(path_rules), 6)
         for rule in path_rules:
             inner = rule[rule.index("(") + 1 : -1]
             self.assertTrue(inner.startswith("//") and inner.endswith("/**"), rule)
         for tool in ("Write", "Edit"):
-            for root in ("//etc", "//root/.ssh", "//root/.config", "//root/.claude"):
+            for root in ("//root/.ssh", "//root/.config/rclone", "//root/.claude"):
                 self.assertIn(f"{tool}({root}/**)", doorkit.DENY_RULES)
+            # 2026-11-17 起：/etc 逐次询问，hushai 自己的配置目录放开
+            self.assertIn(f"{tool}(//etc/**)", doorkit.ASK_RULES)
+            self.assertIn(f"{tool}(//root/.config/hushai/**)", doorkit.ALLOW_RULES)
+            self.assertNotIn(f"{tool}(//root/.config/**)", doorkit.DENY_RULES)
 
     def test_local_only_todo_becomes_item_without_model(self) -> None:
         """隔离领域带待办的行：不进提示词，但落成开放项、进今日待办，重跑不重复。"""

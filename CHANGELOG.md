@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **单独预算**：`[brain] max_daily_calls`（默认 12）只数 `brain` 调用；主预算改为不数 `capture` 与 `brain`（`ledger.SEPARATE_BUDGET_JOBS`）。
 - **晨间简报**新增「第二大脑」一节（昨天以来新入脑的页 + 一页旧页重温，隔离领域不出现）；`doctor` 的 `second-brain` 一项改为 `brain lint` 结论；`hushai config` 菜单 6 改为开关、参数、立即编译、检索、体检。
 
+- **自动入脑**：capture 模型多判一项 `brain`（人物 / 项目 / 笔记 / 无），值得长期记住的自动写成带入脑前缀的收件行，当晚编译；隔离领域永不加前缀。
+- **管家权限收窄后放开**（`doorkit`）：`/root/.config/hushai/**` 允许读写（新增 `ALLOW_RULES`）；`/etc/**` 写入、`sudo`、`systemctl stop/disable` 由禁止改为逐次询问；`/root/.ssh`、`/root/.claude`、`/root/.config/rclone` 仍禁止（rclone 连读也禁止）。重新生成端接入包后生效。
+
 ### Removed
 - **旧版第二大脑（v1）**：`brain_collect`、`brain_daily`、`brain_docs`、`brain_index`、`brain_items`、`brain_links`、`brain_maint`、`brain_merge`、`brain_model`、`brain_onboard`、`brain_process`、`brain_routines`、`checkpoint_verify_brain` 与 8 个旧单元模板（`brain-daily`、`brain-weekly`、`resurface`、`monthly`）；`[brain]` 旧键（`daily_enabled` 等）读取时忽略。`hushai brain disable` 会清配置目录里的新旧单元并列出系统目录残留。
 - **额度用尽自动切 agy（2026-11-17）**：`steward_online` 不再识别额度字样、不再自动切换和重启管家；需要时手动 `hushai steward use agy|claude`。

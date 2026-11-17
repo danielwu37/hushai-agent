@@ -28,18 +28,22 @@ DENY_RULES = [
     "Bash(chmod -R 777*)",
     "Bash(shutdown*)",
     "Bash(reboot*)",
-    "Bash(systemctl stop*)",
-    "Bash(systemctl disable*)",
     "Bash(mail*)",
     "Bash(sendmail*)",
-    "Write(//etc/**)",
     "Write(//root/.ssh/**)",
-    "Write(//root/.config/**)",
     "Write(//root/.claude/**)",
-    "Edit(//etc/**)",
+    "Write(//root/.config/rclone/**)",
     "Edit(//root/.ssh/**)",
-    "Edit(//root/.config/**)",
     "Edit(//root/.claude/**)",
+    "Edit(//root/.config/rclone/**)",
+    "Read(//root/.config/rclone/**)",
+]
+
+# 管家可直接读写 hushai 自己的配置与单元目录（2026-11-17 起）；/etc 逐次询问；其余 /root/.config 走默认（询问）
+ALLOW_RULES = [
+    "Read(//root/.config/hushai/**)",
+    "Write(//root/.config/hushai/**)",
+    "Edit(//root/.config/hushai/**)",
 ]
 
 ASK_RULES = [
@@ -53,6 +57,9 @@ ASK_RULES = [
     "Bash(rclone *)",
     "Bash(ssh *)",
     "Bash(systemctl *)",
+    "Bash(sudo *)",
+    "Write(//etc/**)",
+    "Edit(//etc/**)",
     "WebFetch",
 ]
 
@@ -70,17 +77,13 @@ AGY_DENY_RULES = [
     "command(chmod -R 777*)",
     "command(shutdown*)",
     "command(reboot*)",
-    "command(systemctl stop*)",
-    "command(systemctl disable*)",
     "command(mail*)",
     "command(sendmail*)",
-    "write_file(/etc/)",
     "write_file(/root/.ssh/)",
-    "write_file(/root/.config/)",
+    "write_file(/root/.config/rclone/)",
     "write_file(/root/.claude/)",
-    "edit_file(/etc/)",
     "edit_file(/root/.ssh/)",
-    "edit_file(/root/.config/)",
+    "edit_file(/root/.config/rclone/)",
     "edit_file(/root/.claude/)",
 ]
 
@@ -95,6 +98,9 @@ AGY_ASK_RULES = [
     "command(rclone *)",
     "command(ssh *)",
     "command(systemctl *)",
+    "command(sudo *)",
+    "write_file(/etc/)",
+    "edit_file(/etc/)",
 ]
 
 
@@ -112,6 +118,7 @@ def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd
         "permissions": {
             "deny": DENY_RULES,
             "ask": ASK_RULES,
+            "allow": ALLOW_RULES,
         },
         "hooks": {
             "SessionStart": [

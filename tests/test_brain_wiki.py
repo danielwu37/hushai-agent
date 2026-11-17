@@ -216,6 +216,21 @@ class TestBrainWiki(unittest.TestCase):
         self.assertEqual(out.returncode, 0, msg=out.stderr)
         self.assertIn("22:30:00 Asia/Shanghai", (units / "hushai-demo-brain.timer").read_text(encoding="utf-8"))
 
+    def test_capture_model_tags_long_term_knowledge_with_brain_prefix(self) -> None:
+        from hushai_agent import capture_model
+
+        v = capture_model.make_validator(self.cfg())
+        ok, _ = v({"record": True, "domain": "生活", "did": "王老师建议先练通分", "todo": "无", "brain": "人物"})
+        self.assertEqual(ok["did"], "人物：王老师建议先练通分")
+        same, _ = v({"record": True, "domain": "工作", "did": "笔记：口径以 11110 为准", "todo": "无", "brain": "笔记"})
+        self.assertEqual(same["did"], "笔记：口径以 11110 为准")
+        health, _ = v({"record": True, "domain": "健康", "did": "复查结果", "todo": "无", "brain": "笔记"})
+        self.assertEqual(health["did"], "复查结果")
+        plain, _ = v({"record": True, "domain": "生活", "did": "今天去超市", "todo": "无", "brain": "无"})
+        self.assertEqual(plain["did"], "今天去超市")
+        add_inbox_entry("demo", "steward", "生活", ok["did"], is_auto=True)
+        self.assertEqual(len(brain_raw.pending_lines(self.cfg(), brain_cfg.default_state(), DAY)), 1)
+
     def test_index_respects_line_limit(self) -> None:
         pages = [parse_page(f"notes/t{i}.md", f"---\ntype: topic\ntitle: t{i}\nupdated: 2026-11-{i % 28 + 1:02d}\n---\n")
                  for i in range(60)]
