@@ -264,8 +264,10 @@ max_daily_calls = 20
 | `hushai ledger --instance NAME [--limit N] [--json]` | 查看运行账本记录 |
 | `hushai adapter test NAME --instance X [--tier light\|heavy] [--json]` | 用极小提示词与结构（`{"ok": true}`）自检问答式适配项，记 `call` 账本行并受每日预算限制 |
 | `hushai dispatch --instance X --name JOB (--task FILE \| --goal TEXT [--domain D]) [--adapter NAME] [--tier heavy] [--workdir DIR] [--timeout SEC] [--json]` | 在隔离工作目录执行代理式派活（默认 `<状态目录>/jobs/<任务名>/work/`，禁止位于 vault 内）；中断带会话号时自动续跑一次，记账并保存 `out.json` |
-| `hushai heal --instance X [--before digest\|weekly] [--dry-run] [--json]` | 静默自愈健康检查：执行 7 项白名单确定性自检与恢复，正常只记账本，自愈写 `<日期>-heal.md` 一行，2 次失败写 `today.md` 顶部告警（24 小时去重） |
-| `hushai capture --instance X [--door ID] [--json]` | 从钩子标准输入读取会话 JSONL，纯机械取最后一条人类消息前 80 字写入 `<日期>-<door>-auto.md`（同 `session_id` 10 分钟内最多一行） |
+| `hushai heal --instance X [--before digest\|weekly] [--dry-run] [--json]` | 静默自愈健康检查：执行 8 项白名单确定性自检与恢复，正常只记账本；自愈与 2 次失败都写 `<state>/alerts.jsonl`（需人工的 24 小时去重，恢复后自动撤下），不进收件和 today.md |
+| `hushai capture --instance X [--door ID] [--json]` | 从钩子标准输入读取会话 JSONL；配了 `[jobs] capture` 时由轻档模型读最后一轮对话（人类全文、AI 回复）判断记不记、记成一句话；模型不可用时退回机械取前 120 字。写入 `<日期>-<door>-auto.md`（同 `session_id` 10 分钟内最多一次） |
+| `hushai alert add\|resolve\|list\|active --instance X` | 系统告警：`add --source ext:<任务> --level warning\|needs_human --message …` 写 `<state>/alerts.jsonl`（周边任务用它代替写收件）；`resolve --source <前缀>` 撤下；`active` 供管家会话开场钩子主动报告，没有未恢复告警时静默 |
+| `hushai ledger --instance X --stats [--days 7] [--json]` | 北极星三项指标：需人介入次数、今日待办有用率、收件系统自嗨率（关键词粗估，`[stats] system_keywords` 可改）；周报末尾自动附这一节 |
 
 ### Doctor 检查项清单
 
@@ -379,9 +381,9 @@ timeout = 60
 - **`hushai heal`**：
   - 检查项注册表（`heal.CHECKS`）：`vault_rw`（10 秒子进程探针写读删 `.heal-probe`）、`state_and_disk`（状态目录可写且剩余空间 ≥ 500 MB）、`timers_on_time`（`digest` > 26h / `weekly` > 8d 漏跑补跑与 `failed` 单元复位重启）、`watch_alive`（`hushai-<实例>-watch.path` 非 `active` 时复位启动）、`memory_write`（超 2 天未对账收件补跑 `reconcile`，钩子缺失重装 `doorkit`）、`model_available`（不调模型，统计近 24h 账本，回退链首家连续 3 次失败则写 `<状态目录>/adapter-skip.json` 让调用器 6 小时内跳过首家直走下一家，到期自动恢复）、`sync_ok`（配了 `[sync] remote` 时执行 `rclone lsd <remote> --timeout 15s`，失败重试 1 次）。
   - 白名单护栏：只允许操作 `hushai-<实例>-*` 与 `rclone-*.service` / `mnt-onedrive-*.mount`，白名单外的单元名一律拒绝操作并上报。
-  - 静默与上报：全正常只写账本 `job=heal, result=ok`；已自愈写账本加 `hub/inbox/<日期>-heal.md` 一行（`自愈：X，动作 Y，结果 Z`）；修 2 次仍失败或不在白名单则在 `hub/today.md` 顶部加一条 `- 系统：X 坏了，建议 Y`（`<状态目录>/heal-alerts.json` 24 小时去重），账本记 `result=needs_human`。
+  - 静默与上报：全正常只写账本 `job=heal, result=ok`；已自愈写 `alerts.jsonl` 一条 info；修 2 次仍失败或不在白名单写一条 `needs_human`（`<状态目录>/heal-alerts.json` 24 小时去重），账本记 `result=needs_human`；该项检查恢复正常时自动撤下并清冷却。`steward_online` 不再做额度自动切换（2026-11-17 移除）。
 - **`hushai capture`**：
-  - 从标准输入读取钩子 JSON（`session_id`、`transcript_path`），纯机械提取会话 JSONL 最后一条人类消息的前 80 字写入 `hub/inbox/<日期>-<door>-auto.md`。
+  - 从标准输入读取钩子 JSON（`session_id`、`transcript_path`），配了 `[jobs] capture`（如 `claude:light`）时，把最后一条人类消息全文（≤4000 字）与其后 AI 回复（≤2000 字）交给模型，按 `prompts/capture.zh.md` 判断：维护 hushAi 本身、寒暄不记（只记账本），真实事务记成一句 ≤60 字并带待办；单独每日预算 `[capture] max_daily_calls`（默认 40，不占主预算），模型锁只等 5 秒；失败退回机械取前 120 字。写入 `hub/inbox/<日期>-<door>-auto.md`。
   - 同一 `session_id` 10 分钟内最多写一行（状态存于 `<状态目录>/capture-state.json`）。
 
 ### 7.10 目标（预留，未启用）

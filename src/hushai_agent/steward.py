@@ -1,11 +1,10 @@
-"""常驻管家会话（hushai steward）：模型切换（claude / agy）、状态查询与在线/额度自愈检查。"""
+"""常驻管家会话（hushai steward）：模型切换（claude / agy）、状态查询与在线自愈检查。"""
 
 from __future__ import annotations
 
 import configparser
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,12 +20,6 @@ from hushai_agent.paths import (
 
 VALID_BACKENDS = ("claude", "agy")
 DEFAULT_BACKEND = "agy"
-QUOTA_EXHAUSTED_PATTERNS = (
-    re.compile(r"You've hit your [^\n\"']*limit", re.I),
-    re.compile(r"You're out of usage credits", re.I),
-    re.compile(r'"error"\s*:\s*"rate_limit"'),
-)
-
 
 def get_backend(cfg: InstanceConfig) -> str:
     """读取 config.ini 中的 [steward] backend（缺省为 agy）。"""
@@ -64,7 +57,10 @@ def render_steward_kit(cfg: InstanceConfig, out_dir: Path, door: str | None = No
 
     hooks_obj = {
         "hushai-steward": {
-            "SessionStart": [{"type": "command", "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}"}],
+            "SessionStart": [
+                {"type": "command", "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {target_door}"},
+                {"type": "command", "command": f"{hushai_cmd} alert active --instance {cfg.name}"},
+            ],
             "Stop": [
                 {"type": "command", "command": f"{hushai_cmd} capture --instance {cfg.name} --door {target_door}"},
                 {"type": "command", "command": f"{hushai_cmd} reconcile --instance {cfg.name}"},
@@ -214,69 +210,17 @@ def restart_steward(cfg: InstanceConfig, dry_run: bool = False, hooks: dict[str,
     return {"ok": ok, "instance": cfg.name, "backend": get_backend(cfg), "service": unit, "detail": msg}
 
 
-def detect_claude_quota_exhausted(cfg: InstanceConfig, hooks: dict[str, Any] | None = None) -> str | None:
-    """检测 steward 日志或 tmux 屏幕是否出现 Claude 额度用尽。"""
-    texts: list[str] = []
-    if hooks and "steward_log_text" in hooks:
-        texts.append(str(hooks["steward_log_text"]))
-    else:
-        log_file = get_instance_state_dir(cfg.name) / "steward.log"
-        if log_file.is_file():
-            raw = log_file.read_text(encoding="utf-8", errors="ignore")
-            idx = raw.rfind("[hushai-steward start backend=claude")
-            texts.append(raw[idx:] if idx >= 0 else raw[-8000:])
-        run_cmd: Callable[..., tuple[int, str]] = (hooks or {}).get("cmd_runner") or _default_cmd_runner
-        session = f"hushai-{cfg.name}"
-        # 只看屏幕最后 40 行、精确会话名（结尾冒号：tmux 3.2 的 capture-pane 不接受无冒号的 =名）；更早的滚屏多半是对话内容，容易误判
-        rc, pane = run_cmd(["tmux", "-L", session, "capture-pane", "-p", "-t", f"={session}:", "-S", "-40"], timeout=5)
-        if rc == 0 and pane:
-            texts.append(pane)
-    for blob in texts:
-        for pat in QUOTA_EXHAUSTED_PATTERNS:
-            if m := pat.search(blob):
-                return m.group(0).strip()[:120]
-    return None
-
-
 def check_steward_online(cfg: InstanceConfig, before: str | None, dry_run: bool, hooks: dict[str, Any]) -> dict[str, Any]:
-    """8. 管家在线：检查 tmux 会话与单元状态；Claude 额度用尽时自动切到 agy 并记告警。"""
-    from hushai_agent import alerts
+    """8. 管家在线：检查 tmux 会话与单元状态，离线时重启。额度用尽不自动切换（2026-11-17 起彻底关掉）。"""
     from hushai_agent.heal import operate_systemd_unit
     from hushai_agent.heal_checks import _unit_installed
 
     unit = hooks.get("steward_unit") or f"hushai-{cfg.name}-steward.service"
-    has_hook = any(k in hooks for k in ("steward_tmux_alive", "steward_log_text", "steward_unit"))
+    has_hook = any(k in hooks for k in ("steward_tmux_alive", "steward_unit"))
     if not has_hook and not _unit_installed(unit, hooks):
         return {"status": "ok", "result": f"{unit} 尚未安装，跳过检查"}
 
     backend = get_backend(cfg)
-    if backend == "claude" and (hit := detect_claude_quota_exhausted(cfg, hooks)):
-        sw = use_backend(cfg, "agy", restart=True, dry_run=dry_run, reason="Claude 额度用尽自动接手", hooks=hooks)
-        if not sw.get("ok"):
-            return {
-                "status": "failed",
-                "problem": f"Claude 额度用尽（{hit}），切到 agy 后重启失败（{sw.get('restart_detail')}）",
-                "action": "hushai steward use agy",
-                "suggestion": f"人工运行 hushai steward restart --instance {cfg.name}",
-                "tries": 1,
-            }
-        if not dry_run:
-            alerts.record_alert(
-                cfg,
-                kind="steward_quota_switch",
-                level="warning",
-                message="管家已临时切到 agy",
-                suggestion="Claude 额度恢复后说「切回 Claude」或运行 hushai steward use claude",
-                source="heal:steward_online",
-            )
-        return {
-            "status": "healed",
-            "problem": f"Claude 额度用尽（{hit}）",
-            "action": "自动执行 hushai steward use agy 并重启管家服务",
-            "result": "已切换到 agy 并写入 alerts.jsonl 系统通知",
-            "tries": 1,
-        }
-
     st = status(cfg, hooks=hooks)
     if st["service_active"] and st["tmux_alive"]:
         return {"status": "ok", "result": f"{unit} active，tmux 会话 {st['tmux_session']} 在线（backend={backend}）"}

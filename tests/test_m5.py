@@ -87,7 +87,7 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         self.assertNotIn("hooks", agents_hooks)
         self.assertIn("hushai-steward", agents_hooks)
         steward_hook = agents_hooks["hushai-steward"]
-        self.assertEqual([h["type"] for h in steward_hook["SessionStart"]], ["command"])
+        self.assertEqual([h["type"] for h in steward_hook["SessionStart"]], ["command", "command"])
         self.assertEqual([h["type"] for h in steward_hook["Stop"]], ["command", "command"])
 
         agy_settings_path = script_path.parent / "agy-settings.json"
@@ -129,17 +129,18 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         recent = alerts.load_recent_alerts(self.cfg(), limit=20)
         self.assertTrue(any("管家离线" in a.get("message", "") for a in recent))
 
-    def test_03_heal_steward_quota_exhausted_switches_to_agy(self) -> None:
-        """3. backend=claude 且日志出现真实额度耗尽特征时，heal 自动切到 agy 并写入 alerts.jsonl（不污染 today.md）。"""
+    def test_03_heal_never_switches_backend_on_quota_text(self) -> None:
+        """3. 额度自动切换已彻底关掉（2026-11-17）：日志里出现额度用尽字样也不切 agy、不重启。"""
         steward.set_backend(self.cfg(), "claude")
-        log_file = self.state_dir / "steward.log"
-        log_file.write_text(
+        (self.state_dir / "steward.log").write_text(
             "[hushai-steward start backend=claude ts=2026-03-02T09:00:00+08:00]\n"
             "You've hit your 5-hour limit · resets 4:30am (UTC)\n",
             encoding="utf-8",
         )
+        seen: list[list[str]] = []
 
         def _fake_cmd(argv: list[str], timeout: int = 15) -> tuple[int, str]:
+            seen.append(list(argv))
             return 0, "active"
 
         res = heal.run_heal(
@@ -148,15 +149,10 @@ class TestM5StewardAndMuseGate(unittest.TestCase):
         )
         self.assertTrue(res["ok"])
         chk = {c["id"]: c for c in res["checks"]}["steward_online"]
-        self.assertEqual(chk["status"], "healed")
-        self.assertEqual(steward.get_backend(self.cfg()), "agy")
-
-        today_txt = (self.vault / "hub" / "today.md").read_text(encoding="utf-8")
-        self.assertNotIn("- 系统：", today_txt)
-        recent = alerts.load_recent_alerts(self.cfg(), limit=20)
-        self.assertTrue(any("Claude 额度用尽自动接手" in a.get("message", "") and "切前 claude，切后 agy" in a.get("message", "") and a.get("kind") == "steward_switch" for a in recent))
-        self.assertFalse((self.vault / "hub" / "inbox" / "2026-03-02-steward.md").exists())
-        self.assertTrue(validate_vault(self.vault)["ok"])
+        self.assertEqual(chk["status"], "ok")
+        self.assertEqual(steward.get_backend(self.cfg()), "claude")
+        self.assertFalse(any(a[:2] == ["systemctl", "restart"] for a in seen))
+        self.assertFalse(hasattr(steward, "detect_claude_quota_exhausted"))
 
     def test_04_muse_gate_commands_and_security(self) -> None:
         """4. Muse SSH 闸门：覆盖 ping/ls/read/append-inbox/put/verify 及 6 类越权拒绝。"""

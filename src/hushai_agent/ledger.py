@@ -112,8 +112,8 @@ def read(
     return rows
 
 
-def calls_today(cfg: InstanceConfig) -> int:
-    """统计实例时区当天（按 clock.today）的模型调用（kind == 'call'）行数。"""
+def calls_today(cfg: InstanceConfig, only_job: str | None = None, exclude_job: str | None = None) -> int:
+    """统计实例时区当天（按 clock.today）的模型调用（kind == 'call'）行数；可只数或排除某个任务。"""
     target_date = clock.today(cfg)
     tz_name = getattr(cfg, "timezone", DEFAULT_TIMEZONE)
     tz = ZoneInfo(tz_name)
@@ -121,6 +121,8 @@ def calls_today(cfg: InstanceConfig) -> int:
     count = 0
     for row in read(cfg):
         if row.get("kind") != "call":
+            continue
+        if (only_job and row.get("job") != only_job) or (exclude_job and row.get("job") == exclude_job):
             continue
         ts_raw = row.get("ts")
         if not isinstance(ts_raw, str) or not ts_raw.strip():

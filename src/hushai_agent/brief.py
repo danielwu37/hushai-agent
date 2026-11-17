@@ -105,7 +105,7 @@ def build_brief(cfg: InstanceConfig) -> dict[str, Any]:
         {"id": c.id, "kind": c.kind, "text": c.text}
         for c in candidates.pending(candidates.load(cfg))[:MAX_CANDIDATES]
     ]
-    sys_alerts = alerts.load_recent_alerts(cfg, hours=48, limit=5)
+    sys_alerts = alerts.active_alerts(cfg, hours=48, limit=5)  # 只报未恢复的 warning 及以上
     return {
         "for_date": for_date.isoformat(), "degraded": DEGRADED_QUOTE in text,
         "todos": todos, "decisions": decisions, "candidates": cands, "suspects": suspects,

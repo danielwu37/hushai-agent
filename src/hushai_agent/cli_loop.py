@@ -36,6 +36,8 @@ def register_loop_commands(subparsers: Any) -> None:
     p_ledger.add_argument("--instance", required=True, help="实例名称")
     p_ledger.add_argument("--limit", type=int, default=None, help="最多显示的最近记录条数")
     p_ledger.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
+    p_ledger.add_argument("--stats", action="store_true", help="改为输出北极星三项指标（需人介入、待办有用率、系统自嗨率）")
+    p_ledger.add_argument("--days", type=int, default=7, help="--stats 的统计天数（默认 7）")
 
     # 4. digest
     p_digest = subparsers.add_parser("digest", help="执行每日收件对账与派生视图汇总")
@@ -118,6 +120,12 @@ def dispatch_loop_command(args: argparse.Namespace) -> int | None:
 
     if args.command == "ledger":
         cfg = load_instance_config(args.instance)
+        if args.stats:
+            from hushai_agent import northstar
+
+            st = northstar.compute(cfg, days=args.days)
+            print(northstar.to_json(st) if args.json else northstar.render_section(st).strip())
+            return 0
         rows = ledger.read(cfg, limit=args.limit)
         if args.json:
             print(json.dumps(rows, ensure_ascii=False, indent=2))

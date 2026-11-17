@@ -241,7 +241,7 @@ def _check_expired_inbox_lines(cfg: InstanceConfig) -> CheckItem:
 
 def _check_recent_alerts(cfg: InstanceConfig) -> CheckItem:
     """检查 <state>/alerts.jsonl 最近 24 小时内是否有未处理的严重系统告警。"""
-    recent = alerts.load_recent_alerts(cfg, hours=24, limit=20)
+    recent = alerts.active_alerts(cfg, hours=24, limit=20)
     severe = [a for a in recent if a.get("level") in ("error", "critical", "needs_human")]
     if severe:
         return CheckItem(

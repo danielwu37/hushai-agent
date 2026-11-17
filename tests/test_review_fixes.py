@@ -143,19 +143,6 @@ class TestReviewFixes(unittest.TestCase):
         self.assertTrue(argv[-1].startswith("-p="))
 
     # ---- 管家 ----
-    def test_quota_switch_reports_failed_when_restart_fails(self) -> None:
-        steward.set_backend(self.cfg(), "claude")
-
-        def _cmd(argv, timeout=15):
-            if argv[:2] == ["systemctl", "restart"]:
-                return 1, "Access denied"
-            return 0, "active"
-
-        hooks = {"installed_units": {"hushai-demo-steward.service"}, "cmd_runner": _cmd,
-                 "steward_log_text": "You've hit your 5-hour limit"}
-        res = steward.check_steward_online(self.cfg(), None, False, hooks)
-        self.assertEqual(res["status"], "failed")
-
     def test_tmux_targets_are_exact(self) -> None:
         seen: list[list[str]] = []
 

@@ -73,12 +73,16 @@ def run_model(
     timeout: int | None = None,
     chain: list[tuple[str, str]] | None = None,
     text_mode: bool = False,
+    budget: int | None = None,
+    lock_wait: float | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """按任务配置的回退链调用模型，包含每日预算拦截与结构校验失败单次重试。
 
     timeout 为 None 时各适配项用自己的配置（[adapters] <名字>.timeout，默认 180 秒）。
     chain 给出时用它而不是 [jobs] 里的链（路由用）；text_mode 为真时不要结构，
     交给 validate 的是 {"text": 回答文本}。
+    budget 给出时该任务单独计数（只数本任务的调用），不占主预算；主预算不数 capture。
+    lock_wait 给出时模型锁只等这么久（会话钩子用，不能久等）。
     """
     chain = list(chain) if chain else _get_job_chain(cfg, job)
     if not chain:
@@ -95,8 +99,8 @@ def run_model(
     call_meta.setdefault("job", job)
 
     try:
-        with lock.model_lock(cfg):
-            return _run_model_chain_locked(cfg, job, prompt, schema, call_meta, validate, timeout, chain, text_mode)
+        with lock.model_lock(cfg, wait_seconds=lock_wait):
+            return _run_model_chain_locked(cfg, job, prompt, schema, call_meta, validate, timeout, chain, text_mode, budget)
     except lock.LockBusy as exc:
         return None, {
             "degraded": "lock-busy",
@@ -118,8 +122,15 @@ def _run_model_chain_locked(
     timeout: int | None,
     chain: list[tuple[str, str]],
     text_mode: bool,
+    budget: int | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     errors: list[str] = []
+
+    def _over_budget() -> bool:
+        if budget is not None:
+            return ledger.calls_today(cfg, only_job=job) >= budget
+        return ledger.calls_today(cfg, exclude_job="capture") >= cfg.max_daily_calls
+
     calls_made = 0
     last_adapter = ""
     last_tier = ""
@@ -134,7 +145,7 @@ def _run_model_chain_locked(
         last_adapter = adapter_name
         last_tier = tier
 
-        if ledger.calls_today(cfg) >= cfg.max_daily_calls:
+        if _over_budget():
             return None, {
                 "degraded": "budget",
                 "adapter": last_adapter,
@@ -151,7 +162,7 @@ def _run_model_chain_locked(
             continue
 
         for attempt in range(2):
-            if attempt > 0 and ledger.calls_today(cfg) >= cfg.max_daily_calls:
+            if attempt > 0 and _over_budget():
                 return None, {
                     "degraded": "budget",
                     "adapter": last_adapter,

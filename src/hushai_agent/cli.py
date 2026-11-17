@@ -17,6 +17,7 @@ from hushai_agent.cli_m3c import dispatch_m3c_command, register_m3c_commands
 from hushai_agent.cli_m3d import dispatch_m3d_command, register_m3d_commands
 from hushai_agent.cli_m3e import dispatch_m3e_command, register_m3e_commands
 from hushai_agent.cli_m5 import dispatch_m5_command, register_m5_commands
+from hushai_agent.cli_alert import dispatch_alert_command, register_alert_commands
 from hushai_agent.cli_outbox import dispatch_outbox_command, register_outbox_commands
 from hushai_agent.config import DEFAULT_LANG, DEFAULT_TIMEZONE, ConfigError
 from hushai_agent.doctor import run_doctor
@@ -101,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_m3e_commands(subparsers)
     register_m5_commands(subparsers)
     register_outbox_commands(subparsers)
+    register_alert_commands(subparsers)
     register_brain_commands(subparsers)
     register_config_command(subparsers)
     return parser
@@ -175,6 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dispatch_m3e_command,
             dispatch_m5_command,
             dispatch_outbox_command,
+            dispatch_alert_command,
             dispatch_brain_command,
             dispatch_config_command,
         ):

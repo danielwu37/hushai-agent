@@ -251,6 +251,8 @@ def _run_heal_locked(
         }
         results.append(entry)
 
+        if entry["status"] in ("ok", "healed") and not dry_run:
+            alerts.resolve_heal_check(inst_cfg, check_id)  # 恢复了就撤下之前的需人工告警
         if entry["status"] == "healed" and not dry_run:
             healed_alert_files.append(_write_heal_alert(inst_cfg, entry))
         elif entry["status"] == "failed" and not dry_run:

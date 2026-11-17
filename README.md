@@ -39,8 +39,8 @@
 
 ```text
 早上 · 办公室电脑
-  打开终端 AI（Claude Code / agy），SessionStart 自动拉取昨夜中枢整理的
-  「晨间简报」与待办交接，直接接续昨天的上下文推进工作；结束对话自动采集摘要入库。
+  打开终端 AI（Claude Code / agy），会话开场钩子列出交换区里给本端的待取文件，
+  管家端另外主动报告未恢复的系统问题；结束对话由轻档模型判断要不要记、记成哪一句。
 
 白天 · 手机端（外出/会议间隙）
   打开手机 Claude App、Muse 或待办简报页：语音转述一条决策或人员承诺、
@@ -136,7 +136,7 @@ hushai config
 | 使用工具 | 接入方法 | 实现效果 |
 | --- | --- | --- |
 | **Claude Code / Antigravity (`agy`)** | 1. 在菜单 `2` 将 `office`、`laptop` 加入已知接入端；<br>2. 在菜单 `5` 生成对应 `doorkit`（附 `SessionStart`/`Stop` 钩子模板）；<br>3. 远端电脑通过 SSH 强制命令连接服务器 `hushai gate ssh`。 | 每次在任意一台电脑打开终端 AI，自动同步最新简报和待收消息；退出会话自动记录产出与待办，公司和家里无缝接力。 |
-| **Obsidian / 本地文本编辑器** | 在菜单 `5` 配置 `[sync]` 远端（如 `onedrive:hushai-vault`），通过 `hushai sync` 或菜单第 `5 → 2` 项执行按归属单向同步（不自带后台定时任务，可按需加入 cron）。 | 服务器把整理好的 `today.md`、`index.md`、`notes/`、`sources/`、`people/`、`projects/`、`daily/`、`weekly.md`、`reports/` 推向网盘，本地电脑只往自己所属端写文件，永不冲突覆盖；`local_only`（如 `domains/health`）与 `domains/` 绝不上云。 |
+| **Obsidian / 本地文本编辑器** | 在菜单 `5` 配置 `[sync]` 远端（如 `onedrive:hushai-vault`），配了远端后自动生成同步定时器，每小时 :00、:15、:45 按归属单向同步（避开 :30 的汇总）；也可 `hushai sync` 或菜单第 `5 → 2` 项手动执行。 | 服务器把整理好的 `today.md`、`index.md`、`notes/`、`sources/`、`people/`、`projects/`、`daily/`、`weekly.md`、`reports/` 推向网盘，本地电脑只往自己所属端写文件，永不冲突覆盖；`local_only`（如 `domains/health`）与 `domains/` 绝不上云。 |
 
 ### 2. 手机端（Claude、Muse、Duet 与浏览器）
 
@@ -214,9 +214,9 @@ hushai uninstall --instance my --with-systemd            # 先演练预览，加
 
 ## 当前版本的诚实边界（v0.2.1）
 
-- **建议使用独立系统用户或 root 部署服务端定时单元**：使用受限普通用户安装时，业务功能可正常运行，但 `heal` 自愈模块重启 `systemd` 服务可能因权限不足转为在 `today.md` 顶部告警提醒。
-- **Claude 远程会话继承服务器全局配置**：`claude` 远程会话模式会读取同账号全局 `~/.claude/` 配置；推荐为 `hushai` 分配专用用户或专用服务目录以隔离规则。
-- **「Claude 额度耗尽自动切 `agy`」在测试桩验证通过，真实生产账单报错样式仍在持续跟踪**：手动与菜单切换（`hushai steward use agy`）经实际验证可靠。
+- **建议使用独立系统用户或 root 部署服务端定时单元**：使用受限普通用户安装时，业务功能可正常运行，但 `heal` 自愈模块重启 `systemd` 服务可能因权限不足，转为写系统告警（`<state>/alerts.jsonl`，晨间简报与管家开场主动报告）。
+- **Claude 远程会话与宿主机共用账号**：`claude remote-control` 不支持 `--setting-sources`，框架用 `claudeMdExcludes` 挡住用户级 `CLAUDE.md`，权限与钩子放在 vault 的 `.claude/settings.local.json`；用户级 `~/.claude/settings.json` 仍会生效。
+- **额度用尽不自动切换模型**：remote-control 下测不到真实额度信号，自动切换已移除；需要时手动 `hushai steward use agy|claude`（会重启管家、打断当前对话）。
 - **ChatGPT 等封闭云端应用**尚未开放本地闸门直连，现阶段需通过复制投递至 `hub/exchange/in/` 或由管家转存。
 - **Second-Brain 所有周期 Routine 默认处于禁用状态**：安装与升级不会擅自开启后台自动写入，也不会未经 `--yes` 同意擅自删除或合并任何已有笔记。启用 `monthly` 或修改第二大脑时间参数后，需在菜单 `5` 或 `hushai install units --with-brain` 重新生成并启用对应 systemd 定时器；人物与项目档案按显式 `人物：`/`项目：`/`@姓名` 前缀触发提取。
 

@@ -221,7 +221,7 @@ class TestM3e(unittest.TestCase):
         os.environ["HUSHAI_NOW"] = "2026-03-02T10:00:00"
         r1 = capture.run_capture(self.cfg(), door="steward", stdin_text=hook_stdin)
         self.assertTrue(r1["written"])
-        self.assertEqual(len(r1["snippet"]), 80)
+        self.assertEqual(len(r1["snippet"]), min(82, capture.MAX_CHARS))  # 未配模型时退回机械采集，上限 MAX_CHARS
 
         auto_file = self.vault / "hub" / "inbox" / "2026-03-02-steward-auto.md"
         self.assertTrue(auto_file.is_file())

@@ -41,6 +41,7 @@ class ExtConfig:
     sync_server_doors: tuple[str, ...] = DEFAULT_SYNC_SERVER_DOORS
     capture_default_domain: str = ""
     capture_system_markers: tuple[str, ...] = ()
+    capture_max_daily: int = 40
 
 
 def _csv(raw: str) -> tuple[str, ...]:
@@ -113,4 +114,5 @@ def load_ext(cfg: InstanceConfig) -> ExtConfig:
         sync_server_doors=sync_server_doors,
         capture_default_domain=capture_default_domain,
         capture_system_markers=_csv(parser.get("capture", "system_markers", fallback="")),
+        capture_max_daily=_int(parser, "capture", "max_daily_calls", 40),
     )

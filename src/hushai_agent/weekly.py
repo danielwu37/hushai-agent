@@ -116,6 +116,9 @@ def run_weekly(
         weekly_text = render_weekly_report(
             as_of_str, overdue_items, stale_status, model_data, degraded
         )
+        from hushai_agent import northstar  # 北极星三项指标，纯代码统计
+
+        weekly_text = weekly_text.rstrip("\n") + "\n" + northstar.render_section(northstar.compute(inst_cfg, 7, as_of_date))
         state_dir = get_instance_state_dir(inst_cfg.name)
         target_hub = (state_dir / "dry-run" / as_of_str / "hub") if dry_run else (inst_cfg.vault / "hub")
         roots = [state_dir] if dry_run else [inst_cfg.vault]

@@ -8,7 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- 后续新增改动先写在此处，下个版本发布时自动归档至版本章节 -->
 
+### Removed
+- **额度用尽自动切 agy（2026-11-17）**：`steward_online` 不再识别额度字样、不再自动切换和重启管家；需要时手动 `hushai steward use agy|claude`。
+
 ### Added
+- **`hushai alert`**（`cli_alert.py`）：`add`/`resolve`/`list`/`active`；告警可撤下（`resolved` 行），heal 某项检查恢复即撤下其需人工告警并清 24h 冷却；晨间简报与 `doctor` 只看未恢复的 warning 及以上；管家会话开场钩子 `alert active` 主动报告。周边任务（hushai-ext）改用它，不再写管家收件。
+- **capture 模型判断**（`capture_model.py`、`prompts/capture.zh.md`）：配 `[jobs] capture = claude:light` 后由轻档模型读最后一轮对话全文决定记不记、记成一句话；单独预算 `[capture] max_daily_calls`（默认 40），主预算不再计 capture 调用；模型锁只等 5 秒，失败退回机械采集（前 120 字）。
+- **北极星统计**（`northstar.py`）：`hushai ledger --stats`，周报末尾附「北极星」一节（需人介入、待办有用率、系统自嗨率）。
 - **系统告警独立账本 (`alerts.jsonl`)**：[`alerts.py`](src/hushai_agent/alerts.py) 将 `heal` 自愈/人工介入提示与管家切换告警统一写入 `<state>/alerts.jsonl`，不再污染 `hub/inbox/` 与 `hub/today.md`；[`brief.py`](src/hushai_agent/brief.py) 与 [`brief_html.py`](src/hushai_agent/brief_html.py) 在简报中展示「系统通知」，[`doctor.py`](src/hushai_agent/doctor.py) 检查 `system-alerts`（近 24 小时严重告警）与 `inbox-expired`（超出 `window_days` 的晚到未消化收件）。
 - **`[privacy] local_only_domains`**：默认隔离 `health,健康`，覆盖 `collect`、`judge`、`weekly_parts`、`routing`、`brain_collect`、`brain_process` 与 `brain_routines`，机械对账先局部处理再剥离敏感域，绝不进入外部模型提示词；并在 `hushai config` 菜单 `1 -> 7` 开放配置。
 - **`--with-model` 与 `[sync] pull_doors` / `server_doors`、`[capture] default_domain`**：`digest`/`weekly` 的 `--dry-run` 默认仅在全 `fake` 链路调模型，非 `fake` 适配需显式传 `--with-model` 才调真实模型；新增 `hushai digest --for-date`。

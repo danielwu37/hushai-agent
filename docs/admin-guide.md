@@ -190,11 +190,11 @@ hushai steward restart --instance <实例>
   1. **官方手机网页伴侣（Web Companion）**：Antigravity 无独立原生手机 App，手机浏览器（Safari / Chrome）访问 `https://antigravity.google`，登录同一 Google 账号，在顶部实例切换器中选择服务器会话即可远程操控（可「添加到主屏幕」作为 Web App 使用）。
   2. **SSH + tmux 保底方案**：若手机网络不便访问 Google 网页端或 WebRTC 受阻，可用手机 SSH 客户端（如 Termius、Blink）连接服务器后执行 `tmux attach -t hushai-<实例>` 直接进入同一个管家终端。
 
-### 9.3 额度耗尽自动接手（`heal` 第 8 项检查 `steward_online`）
+### 9.3 管家在线检查（`heal` 第 8 项 `steward_online`）
 
-`hushai heal` 每 30 分钟检查一次 `steward_online`（管家在线）：
-1. 若 `hushai-<实例>-steward.service` 处于 failed/inactive 或 `tmux` 会话不在，自动重启服务拉起会话。
-2. 若当前 `backend = claude`，且管家日志或屏幕输出出现额度耗尽特征（如 `You've hit your ... limit` 或 `"error":"rate_limit"`），自动执行 `use agy` 切到 `agy`、写入收件，并在 `hub/today.md` 顶部提示一次：`- 系统：管家已临时切到 agy，Claude 额度恢复后说「切回 Claude」`。不会自动切回，待使用者指令后再切回 Claude。
+`hushai heal` 每小时 :50 检查一次 `steward_online`（管家在线）：若 `hushai-<实例>-steward.service` 不在运行或 `tmux -L hushai-<实例>` 会话不在，自动重启服务拉起会话，最多 2 次；仍不行写一条 `needs_human` 系统告警。
+
+额度用尽**不会**自动切换模型（2026-11-17 起彻底移除：remote-control 下测不到真实额度信号，误判会重启并打断对话）。需要换模型时手动执行 `hushai steward use agy|claude`。
 
 ---
 

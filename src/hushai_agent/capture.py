@@ -1,4 +1,5 @@
-"""会话结束自动收件采集（hushai capture）：从钩子标准输入读取会话 JSONL，纯机械提取最后一条人类消息前 80 字写入 -auto.md。"""
+"""会话结束自动收件采集（hushai capture）：配了 [jobs] capture 时由轻档模型理解最后一轮对话再决定记不记、怎么记；
+模型不可用时退回机械采集（最后一条人类消息前 120 字 + 维护特征词过滤）。"""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from hushai_agent.paths import get_instance_state_dir
 from hushai_agent.vault import add_inbox_entry
 
 THROTTLE_SECONDS = 600
-MAX_CHARS = 80
+MAX_CHARS = 120
 # 管家维护类对话的缺省特征（不分大小写的子串）；[capture] system_markers 可整体替换
 DEFAULT_SYSTEM_MARKERS = ("你是 hushai 管家", "你是hushai管家", "hushai-agent", "hushai doctor", "代码审核", "代码审查")
 
@@ -194,6 +195,10 @@ def run_capture(
                     "elapsed_seconds": round(elapsed, 1),
                 }
 
+    model_res = _capture_with_model(inst_cfg, tpath, target_door, session_id, state, now_dt)
+    if model_res is not None:
+        return model_res
+
     if snippet.startswith(("- 系统：", "自愈：", "管家切换")):
         return {"ok": True, "written": False, "reason": "system-noise", "session_id": session_id}
     markers = load_ext(inst_cfg).capture_system_markers or DEFAULT_SYSTEM_MARKERS
@@ -223,4 +228,31 @@ def run_capture(
         "domain": domain,
         "snippet": snippet,
         "inbox_file": str(inbox_path),
+    }
+
+
+def _capture_with_model(
+    cfg: InstanceConfig, tpath: Path, door: str, session_id: str, state: dict[str, Any], now_dt: datetime.datetime
+) -> dict[str, Any] | None:
+    """模型判断路径；返回 None 表示没配或调用失败，调用方退回机械采集。"""
+    from hushai_agent import capture_model
+
+    human, assistant = capture_model.extract_last_exchange(tpath)
+    decision = capture_model.classify(cfg, human, assistant)
+    if decision is None:
+        return None
+    state.setdefault("sessions", {})[session_id] = {
+        "last_ts": now_dt.isoformat(), "last_text": decision["did"], "door": door, "mode": "model",
+    }
+    _save_capture_state(get_instance_state_dir(cfg.name), state)
+    if not decision["record"]:
+        ledger.record(cfg, "job", job="capture", date=now_dt.date().isoformat(), result="ok", note=f"skipped: model door={door}")
+        return {"ok": True, "written": False, "reason": "model-skip", "session_id": session_id}
+    todo = decision["todo"] if decision["todo"] not in ("", "无") else None
+    inbox_path = add_inbox_entry(
+        instance=cfg.name, door=door, domain=decision["domain"], did=decision["did"], todo=todo, is_auto=True,
+    )
+    return {
+        "ok": True, "written": True, "session_id": session_id, "door": door, "domain": decision["domain"],
+        "snippet": decision["did"], "inbox_file": str(inbox_path), "mode": "model",
     }

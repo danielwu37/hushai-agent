@@ -122,7 +122,8 @@ def _render_claude_kit(cfg: InstanceConfig, out_dir: Path, door: str, hushai_cmd
                             "type": "command",
                             "command": f"{hushai_cmd} gate check-inbox --instance {cfg.name} --door {door}",
                         }
-                    ],
+                    ] + ([{"type": "command", "command": f"{hushai_cmd} alert active --instance {cfg.name}"}]
+                         if door == cfg.steward_door else []),  # 管家开场主动报未恢复的系统问题
                 }
             ],
             "Stop": [
